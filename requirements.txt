@@ -1,0 +1,6 @@
+flask
+numpy
+scikit-learn>=1.3.0
+joblib>=1.3.0
+reportlab>=3.5.0
+gunicorn>=21.0.0

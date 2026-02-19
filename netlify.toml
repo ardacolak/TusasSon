@@ -1,0 +1,12 @@
+# Netlify deploy ayarlari
+# https://docs.netlify.com/configure-builds/file-based-configuration/
+
+[build]
+  publish = "."
+  # Bu proje Flask backend kullaniyor; su an sadece statik dosyalar yayinlanir.
+  # API (/optimize, /report/pdf vb.) calismasi icin backend ayri bir serviste olmali
+  # veya Netlify Functions ile tasinmali.
+
+[build.environment]
+  NODE_VERSION = "18"
+  # Python Netlify'da build icin kullanilabilir; runtime Flask sunucusu calismaz.

@@ -1,0 +1,16 @@
+# Render Blueprint - Flask uygulamasini tek tikle deploy eder
+# https://docs.render.com/blueprint-spec
+
+services:
+  - type: web
+    runtime: python
+    name: tusas-laminate-optimizer
+
+    # Build: bagimliliklari yukle
+    buildCommand: pip install -r requirements.txt
+
+    # Calistir: Gunicorn ile Flask (PORT Render tarafindan verilir)
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT app:app
+
+    # Opsiyonel: ucretsiz plan (varsayilan starter da olabilir)
+    plan: free
