@@ -821,6 +821,18 @@
               <p class="text-xs text-slate-600 mt-1">Katmanları sürükle-bırak ile taşıyabilirsiniz</p>
             </div>
             <div class="flex gap-2 text-xs text-slate-600 items-center">
+              <!-- Yatay / Dikey Toggle -->
+              <div id="laminate-view-toggle" class="flex rounded-lg border border-slate-300 overflow-hidden shadow-sm">
+                <button id="view-horizontal-btn" class="px-2.5 py-1.5 text-xs font-semibold transition flex items-center gap-1 bg-white text-slate-500 hover:bg-slate-50" title="Yatay Görünüm">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                  Yatay
+                </button>
+                <button id="view-vertical-btn" class="px-2.5 py-1.5 text-xs font-semibold transition flex items-center gap-1 bg-slate-800 text-white" title="Dikey Görünüm">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 4v16M12 4v16M18 4v16"/></svg>
+                  Dikey
+                </button>
+              </div>
+              <div class="w-px h-5 bg-slate-300 mx-1"></div>
               <button id="export-excel-btn"
                 class="px-3 py-1.5 text-xs rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition flex items-center gap-1.5 font-semibold shadow-sm">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -909,11 +921,8 @@
   </div>
 
   <script>
-    // API base URL: localhost'ta çalışırken relative, Netlify'da gerçek backend URL'si
-    const API_BASE =
-      window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        ? ''
-        : 'https://YOUR-BACKEND-DOMAIN.COM'; // TODO: Buraya Flask backend'ini deploy ettiğin URL'i yaz
+    // API base URL: her zaman relative (aynı sunucuda Flask çalışıyor)
+    const API_BASE = '';
 
     // Multi-zone elements
     const zoneCountSelect = document.getElementById('zone-count-select');
@@ -2074,8 +2083,11 @@
       // Zone Score Cards - tüm zone'ları kartlarla göster
       renderZoneScoreCards(data.zones);
 
-      // Laminate Map - tüm zone'ları göster
-      renderMultiZoneLaminateMap(data.zones, data.transitions, data.neighbor_graph || []);
+      // Laminate Map - tüm zone'ları göster (cache'le ve toggle moduna göre render)
+      window._laminateMapZones = data.zones;
+      window._laminateMapTransitions = data.transitions;
+      window._laminateMapNeighborGraph = data.neighbor_graph || [];
+      rerenderLaminateMap();
 
       // İyileştirme Önerileri - Laminate Map'in hemen altında
       renderImprovementSuggestions(data.zones);
@@ -2173,9 +2185,10 @@
     function renderMultiZoneLaminateMap(zones, transitions, neighborGraph) {
       laminateMapEl.innerHTML = '';
 
-      // Store zones data for Excel export
+      // Store zones data for Excel export and view toggle
       window._laminateMapZones = zones;
       window._laminateMapTransitions = transitions;
+      window._laminateMapNeighborGraph = neighborGraph;
 
       // neighbor_graph: backend'den gelen komşuluk listesi
       // neighborGraph[i] = zone i'nin komşu zone indeksleri listesi
@@ -2484,6 +2497,356 @@
         laminateMapEl.appendChild(row);
       });
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DİKEY (VERTICAL) LAMINATE MAP RENDER
+    // Zone'lar yan yana sütunlar, katmanlar yukarıdan aşağıya
+    // ═══════════════════════════════════════════════════════════════════════
+    function renderVerticalLaminateMap(zones, transitions, neighborGraph) {
+      laminateMapEl.innerHTML = '';
+
+      const colorMap = {
+        '0': 'bg-emerald-500',
+        '90': 'bg-sky-500',
+        '45': 'bg-rose-500',
+        '-45': 'bg-amber-500',
+      };
+
+      const dotColorMap = { ...colorMap };
+
+      const sortedZones = [...zones].filter(z => z !== null).sort((a, b) => b.ply_count - a.ply_count);
+      const maxLen = sortedZones[0]?.ply_count || 1;
+      const rootZone = sortedZones.find(z => z.is_root) || sortedZones[0];
+      const rootSeq = rootZone ? rootZone.sequence : [];
+
+      function normalizeAngleCounts(obj) {
+        const out = { '0': 0, '90': 0, '45': 0, '-45': 0 };
+        if (!obj || typeof obj !== 'object') return out;
+        for (const [k, v] of Object.entries(obj)) {
+          const key = String(parseInt(k, 10));
+          if (key === '0' || key === '90' || key === '45' || key === '-45') {
+            out[key] = parseInt(v, 10) || 0;
+          }
+        }
+        return out;
+      }
+
+      const zoneByIndex = new Map();
+      (zones || []).forEach(z => {
+        if (z && typeof z.index === 'number') zoneByIndex.set(z.index, z);
+      });
+
+      const transitionByTo = new Map();
+      (transitions || []).forEach(tr => {
+        if (tr && typeof tr.to === 'number') transitionByTo.set(tr.to, tr);
+      });
+
+      const zoneNeighborMap = new Map();
+      if (Array.isArray(neighborGraph) && neighborGraph.length > 0) {
+        neighborGraph.forEach((neighbors, idx) => {
+          if (Array.isArray(neighbors)) zoneNeighborMap.set(idx, neighbors);
+        });
+      }
+
+      // Ana konteyner: zone'lar yan yana
+      const container = document.createElement('div');
+      container.className = 'flex gap-2 overflow-x-auto pb-2';
+
+      // ── Tüm zone'lar root dizilimi üzerinden hizalanacak ──
+      const rootLen = rootSeq.length;
+      const rootMid = Math.floor(rootLen / 2);
+      const rootIsOdd = rootLen % 2 === 1;
+
+      // ── Her zone için root pozisyonlarındaki dropped set'i hesapla (zincirleme) ──
+      // Zone'dan root'a giden yolu bulup, yol üzerindeki tüm drop'ları birleştir
+      function getDroppedIndicesFromRoot(zoneIdx) {
+        const allDropped = new Set();
+        let currentIdx = zoneIdx;
+        const visited = new Set();
+        while (currentIdx !== undefined && !visited.has(currentIdx)) {
+          visited.add(currentIdx);
+          const currentZone = zoneByIndex.get(currentIdx);
+          if (currentZone && currentZone.is_root) break;
+          const tr = transitionByTo.get(currentIdx);
+          if (!tr) break;
+          if (Array.isArray(tr.dropped_indices)) {
+            // Bu transition'ın dropped_indices'i parent sequence üzerinden
+            // Bunları root sequence indekslerine çevirmemiz gerek
+            tr.dropped_indices.forEach(di => {
+              const idx = parseInt(di, 10);
+              if (Number.isFinite(idx) && idx >= 0) allDropped.add(idx);
+            });
+          }
+          const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
+          currentIdx = parentIndex;
+        }
+        return allDropped;
+      }
+
+      sortedZones.forEach((zone) => {
+        const isRoot = zone.is_root;
+        const seq = Array.isArray(zone.sequence) ? zone.sequence : [];
+        const seqLen = seq.length;
+        const angleCounts = normalizeAngleCounts(zone.ply_counts);
+
+        // Drop-off hesaplamaları - ROOT dizilimi üzerinden
+        let droppedFromRoot = new Set();
+        let parentZoneRef = null;
+        if (!isRoot) {
+          const tr = transitionByTo.get(zone.index);
+          if (tr) {
+            const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
+            parentZoneRef = zoneByIndex.get(parentIndex) || null;
+          }
+          droppedFromRoot = getDroppedIndicesFromRoot(zone.index);
+        }
+
+        // Sütun
+        const col = document.createElement('div');
+        col.className = 'flex flex-col items-center min-w-[130px] max-w-[180px] flex-1 bg-white/80 border border-slate-300 rounded-lg px-2 py-2 shadow-sm';
+
+        // Başlık
+        const header = document.createElement('div');
+        header.className = 'text-center mb-2 pb-1.5 border-b border-slate-200 w-full';
+        let headerHTML = `
+          <span class="text-[10px] font-bold ${isRoot ? 'text-blue-600' : 'text-slate-700'}">
+            Zone ${zone.index + 1} ${isRoot ? '(Root)' : ''}
+          </span>
+          <br/>
+          <span class="text-[9px] text-slate-500">${zone.ply_count} ply • ${zone.fitness.toFixed(1)}pts</span>
+        `;
+        header.innerHTML = headerHTML;
+        col.appendChild(header);
+
+        // Katmanlar dikey — TÜM ZONE'LAR ROOT DİZİLİMİ ÜZERİNDEN
+        const layerContainer = document.createElement('div');
+        layerContainer.className = 'flex flex-col items-center gap-[1px] w-full';
+
+        rootSeq.forEach((angle, idx) => {
+          // Simetri ekseni
+          if (!rootIsOdd && idx === rootMid) {
+            const symLine = document.createElement('div');
+            symLine.className = 'w-full h-[5px] bg-amber-500 rounded-full my-1 shadow-[0_0_6px_rgba(245,158,11,0.5)]';
+            symLine.title = 'Simetri Ekseni';
+            layerContainer.appendChild(symLine);
+          }
+
+          const isDropped = !isRoot && droppedFromRoot.has(idx);
+          const block = document.createElement('div');
+
+          if (isDropped) {
+            // Düşürülmüş katman: boşluk
+            block.className = 'w-full h-4 rounded-[2px] bg-slate-200/50 border border-dashed border-slate-300';
+            block.title = `${angle}° - Çıkarıldı`;
+          } else {
+            // Mevcut katman: renkli kutu
+            block.className = `w-full h-4 rounded-[2px] ${colorMap[angle.toString()] || 'bg-slate-500'} flex items-center justify-center text-[8px] font-mono font-semibold text-white ring-1 ring-white/20`;
+            block.textContent = `${angle}°`;
+            block.title = `Ply ${idx + 1}: ${angle}°`;
+          }
+
+          // Simetri ekseni - tek sayıda ortadaki ply
+          if (rootIsOdd && idx === rootMid) {
+            block.style.position = 'relative';
+            block.classList.add('ring-2', 'ring-amber-500');
+          }
+
+          layerContainer.appendChild(block);
+        });
+
+        col.appendChild(layerContainer);
+
+        // Komşuluk bilgisi
+        const zoneNeighbors = zoneNeighborMap.get(zone.index) || [];
+        if (zoneNeighbors.length > 0) {
+          const neighborDiv = document.createElement('div');
+          neighborDiv.className = 'flex flex-wrap gap-0.5 justify-center mt-2 pt-1.5 border-t border-slate-200 w-full';
+          const nLabel = document.createElement('span');
+          nLabel.className = 'text-[8px] text-slate-500 w-full text-center block mb-0.5';
+          nLabel.textContent = 'Komşu';
+          neighborDiv.appendChild(nLabel);
+          zoneNeighbors.forEach(nIdx => {
+            const badge = document.createElement('span');
+            badge.className = 'text-[8px] font-semibold px-1 py-0 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-300';
+            badge.textContent = `Zone ${nIdx + 1}`;
+            neighborDiv.appendChild(badge);
+          });
+          col.appendChild(neighborDiv);
+        }
+
+        // Referans bilgisi (non-root, komşu zonların altında)
+        if (!isRoot && parentZoneRef) {
+          const refDiv = document.createElement('div');
+          refDiv.className = 'flex items-center justify-center gap-1 mt-1.5 w-full';
+          refDiv.innerHTML = `<span class="text-[8px] text-orange-500 font-semibold">Ref: Zone ${parentZoneRef.index + 1}</span>`;
+          col.appendChild(refDiv);
+        }
+
+        // Temiz dizilim butonu (Non-root) — sağa temiz sütun açılır
+        let cleanCol = null;
+        if (!isRoot && droppedFromRoot.size > 0) {
+          const toggleBtn = document.createElement('button');
+          toggleBtn.type = 'button';
+          toggleBtn.className = 'flex items-center gap-1 text-[8px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-1.5 py-0.5 rounded border border-slate-300 shadow-sm transition-all w-full justify-center mt-2';
+          toggleBtn.innerHTML = `
+            <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h16"/></svg>
+            <span>Temiz Dizilim</span>
+          `;
+          col.appendChild(toggleBtn);
+
+          // Sağ tarafa açılacak temiz dizilim sütunu (başlangıçta gizli)
+          cleanCol = document.createElement('div');
+          cleanCol.className = 'hidden flex-col items-center min-w-[130px] max-w-[180px] flex-1 bg-blue-50/80 border border-blue-300/60 rounded-lg px-2 py-2 shadow-sm';
+
+          // Temiz dizilim başlık
+          const cleanHeader = document.createElement('div');
+          cleanHeader.className = 'text-center mb-2 pb-1.5 border-b border-blue-200 w-full';
+          cleanHeader.innerHTML = `
+            <span class="text-[10px] font-bold text-blue-600">Dizilim</span>
+            <br/>
+            <span class="text-[9px] text-blue-400">Zone ${zone.index + 1} (${zone.ply_count} ply)</span>
+          `;
+          cleanCol.appendChild(cleanHeader);
+
+          // Temiz katmanlar — root üzerinden, dropped olanlar boşluk yok sadece kalan
+          const cleanLayers = document.createElement('div');
+          cleanLayers.className = 'flex flex-col items-center gap-[1px] w-full';
+
+          // Root bazlı: aynı pozisyonlarda, dropped olanlar görünmez boşluk
+          rootSeq.forEach((angle, idx) => {
+            if (!rootIsOdd && idx === rootMid) {
+              const symLine = document.createElement('div');
+              symLine.className = 'w-full h-[5px] bg-amber-500 rounded-full my-1 shadow-[0_0_6px_rgba(245,158,11,0.5)]';
+              cleanLayers.appendChild(symLine);
+            }
+
+            const isDropped = droppedFromRoot.has(idx);
+            const block = document.createElement('div');
+
+            if (isDropped) {
+              // Görünmez boşluk (hizalama için yer tutucu)
+              block.className = 'w-full h-4';
+            } else {
+              block.className = `w-full h-4 rounded-[2px] ${colorMap[angle.toString()] || 'bg-slate-500'} flex items-center justify-center text-[8px] font-mono font-semibold text-white ring-1 ring-white/20`;
+              block.textContent = `${angle}°`;
+              block.title = `${angle}°`;
+            }
+
+            if (rootIsOdd && idx === rootMid && !isDropped) {
+              block.classList.add('ring-2', 'ring-amber-500');
+            }
+
+            cleanLayers.appendChild(block);
+          });
+
+          cleanCol.appendChild(cleanLayers);
+
+          // Toggle logic
+          toggleBtn.onclick = () => {
+            const isHidden = cleanCol.classList.contains('hidden');
+            if (isHidden) {
+              cleanCol.classList.remove('hidden');
+              cleanCol.classList.add('flex');
+              toggleBtn.classList.add('bg-slate-200');
+              toggleBtn.querySelector('span').textContent = 'Gizle';
+            } else {
+              cleanCol.classList.add('hidden');
+              cleanCol.classList.remove('flex');
+              toggleBtn.classList.remove('bg-slate-200');
+              toggleBtn.querySelector('span').textContent = 'Temiz Dizilim';
+            }
+          };
+        }
+
+        // Açı sayıları (alt kısım)
+        const legend = document.createElement('div');
+        legend.className = 'mt-2 pt-1.5 border-t border-slate-200 w-full flex flex-col gap-0 text-[8px] font-mono';
+        const angleOrder = ['0', '90', '45', '-45'];
+        const angleLabels = { '0': '0°', '90': '90°', '45': '+45°', '-45': '-45°' };
+        angleOrder.forEach(a => {
+          const count = angleCounts[a] || 0;
+          const lr = document.createElement('div');
+          lr.className = 'flex items-center gap-0.5';
+          lr.innerHTML = `
+            <span class="w-2 h-2 rounded-[1px] ${dotColorMap[a]} inline-block flex-shrink-0"></span>
+            <span class="text-slate-600">${angleLabels[a]}</span>
+            <span class="ml-auto font-semibold text-slate-800">${count}</span>
+          `;
+          legend.appendChild(lr);
+        });
+        const totalRemaining = Object.values(angleCounts).reduce((s, v) => s + v, 0);
+        const totalRow = document.createElement('div');
+        totalRow.className = 'flex items-center gap-0.5 border-t border-slate-300 pt-0.5 mt-0.5';
+        totalRow.innerHTML = `
+          <span class="w-2 h-2 inline-block flex-shrink-0"></span>
+          <span class="text-slate-600 font-semibold">Total</span>
+          <span class="ml-auto font-bold text-slate-900">${totalRemaining}</span>
+        `;
+        legend.appendChild(totalRow);
+        col.appendChild(legend);
+
+        container.appendChild(col);
+        // Temiz dizilim sütununu zone'un hemen sağına ekle
+        if (cleanCol) {
+          container.appendChild(cleanCol);
+        }
+      });
+
+      laminateMapEl.appendChild(container);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // LAMINATE MAP VIEW TOGGLE (Yatay ↔ Dikey)
+    // ═══════════════════════════════════════════════════════════════════════
+    let _laminateViewMode = 'vertical'; // varsayılan dikey
+
+    function setupLaminateViewToggle() {
+      const hBtn = document.getElementById('view-horizontal-btn');
+      const vBtn = document.getElementById('view-vertical-btn');
+      if (!hBtn || !vBtn) return;
+
+      function updateToggleStyle() {
+        if (_laminateViewMode === 'vertical') {
+          vBtn.className = 'px-2.5 py-1.5 text-xs font-semibold transition flex items-center gap-1 bg-slate-800 text-white';
+          hBtn.className = 'px-2.5 py-1.5 text-xs font-semibold transition flex items-center gap-1 bg-white text-slate-500 hover:bg-slate-50';
+        } else {
+          hBtn.className = 'px-2.5 py-1.5 text-xs font-semibold transition flex items-center gap-1 bg-slate-800 text-white';
+          vBtn.className = 'px-2.5 py-1.5 text-xs font-semibold transition flex items-center gap-1 bg-white text-slate-500 hover:bg-slate-50';
+        }
+      }
+
+      hBtn.addEventListener('click', () => {
+        if (_laminateViewMode === 'horizontal') return;
+        _laminateViewMode = 'horizontal';
+        updateToggleStyle();
+        rerenderLaminateMap();
+      });
+
+      vBtn.addEventListener('click', () => {
+        if (_laminateViewMode === 'vertical') return;
+        _laminateViewMode = 'vertical';
+        updateToggleStyle();
+        rerenderLaminateMap();
+      });
+
+      updateToggleStyle();
+    }
+
+    // Mevcut verileri cache'den tekrar render et
+    function rerenderLaminateMap() {
+      const zones = window._laminateMapZones;
+      const transitions = window._laminateMapTransitions;
+      const neighborGraph = window._laminateMapNeighborGraph;
+      if (!zones) return;
+      if (_laminateViewMode === 'vertical') {
+        renderVerticalLaminateMap(zones, transitions, neighborGraph);
+      } else {
+        renderMultiZoneLaminateMap(zones, transitions, neighborGraph);
+      }
+    }
+
+    // Setup toggle on page load
+    document.addEventListener('DOMContentLoaded', setupLaminateViewToggle);
 
     // Kural ikonlarını güncelleyen fonksiyon
     function updateRuleStatus(ruleNum, status) {
@@ -3432,9 +3795,9 @@
       }
     }
 
-    form.addEventListener('submit', async (e) => {
+    multizoneForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const formData = new FormData(form);
+      const formData = new FormData(multizoneForm);
       try {
         const data = await runOptimization(formData);
         emptyState.classList.add('hidden');
