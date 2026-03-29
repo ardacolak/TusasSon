@@ -151,6 +151,7 @@ def _build_params_section(elements, styles, optimization_params):
 
     params = optimization_params or {}
     rule_weights = params.get("rule_weights", {})
+    hard_rules = params.get("hard_rules", {})
 
     # Genel parametreler
     general_data = [
@@ -199,6 +200,36 @@ def _build_params_section(elements, styles, optimization_params):
             ("TOPPADDING", (0, 0), (-1, -1), 5),
         ]))
         elements.append(w_table)
+
+    if hard_rules:
+        elements.append(Spacer(1, 4 * mm))
+        elements.append(Paragraph("Hard Kural Ayarlari", styles["BodyTurkish"]))
+        hard_rule_labels = {
+            "external_0": "0° dis katmanda olmasin",
+            "adjacent_0_90": "0° ve 90° yan yana olmasin",
+            "external_45": "Ilk/son 2 katman ±45° olsun",
+            "max_two_consecutive_drops": "3 ardIsIk drop yasagi",
+        }
+        hard_data = [["Kural", "Durum"]]
+        for key in ["external_0", "adjacent_0_90", "external_45", "max_two_consecutive_drops"]:
+            if key not in hard_rules:
+                continue
+            hard_data.append([hard_rule_labels.get(key, key), "Acik" if hard_rules.get(key) else "Kapali"])
+
+        if len(hard_data) > 1:
+            h_table = Table(hard_data, colWidths=[75 * mm, 20 * mm])
+            h_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A5F")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9FAFB")]),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            elements.append(h_table)
 
     elements.append(Spacer(1, 10 * mm))
 

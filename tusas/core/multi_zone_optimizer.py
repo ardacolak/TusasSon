@@ -15,6 +15,7 @@ from typing import Dict, List, Tuple, Any, Optional
 
 from .laminate_optimizer import LaminateOptimizer
 from .dropoff_optimizer import DropOffOptimizer
+from .symmetry import normalize_ply_counts_for_symmetry
 
 
 # ===== Fiziksel sabitler =====
@@ -45,6 +46,7 @@ class MultiZoneOptimizer:
                  bounds: Optional[List[Dict]] = None,
                  panel_scale_mm: float = 300.0,
                  rule_weights: Optional[Dict[str, float]] = None,
+                 hard_rules: Optional[Dict[str, bool]] = None,
                  use_surrogate: bool = False):
         """
         Args:
@@ -58,7 +60,8 @@ class MultiZoneOptimizer:
         self.zones_config = []
         for zone in zones_config:
             converted = {int(k): int(v) for k, v in zone.items()}
-            self.zones_config.append(converted)
+            normalized = normalize_ply_counts_for_symmetry(converted)
+            self.zones_config.append(normalized["adjusted_counts"])
         
         # Her zone'un toplam ply sayısını hesapla
         self.zone_totals = [sum(z.values()) for z in self.zones_config]
@@ -84,6 +87,7 @@ class MultiZoneOptimizer:
             self._compute_geometry(bounds, panel_scale_mm)
 
         self.rule_weights = rule_weights
+        self.hard_rules = hard_rules
         self.use_surrogate = use_surrogate
 
     def _compute_geometry(self, bounds: List[Dict], panel_scale_mm: float):
@@ -331,6 +335,7 @@ class MultiZoneOptimizer:
         root_updated = False
         total_iterations = 0
         parent_map = {}
+        last_error = None
 
         # Callback wrapper
         def report_progress(val, msg=""):
@@ -367,7 +372,12 @@ class MultiZoneOptimizer:
             print(f"\nRoot Zone (Zone {self.root_index + 1}) optimizasyonu başlıyor...")
             
             report_progress(15, f"Root Zone (Zone {self.root_index + 1}) optimize ediliyor...")
-            root_optimizer = LaminateOptimizer(root_config, weights=self.rule_weights, use_surrogate=self.use_surrogate)
+            root_optimizer = LaminateOptimizer(
+                root_config,
+                weights=self.rule_weights,
+                use_surrogate=self.use_surrogate,
+                hard_rules=self.hard_rules,
+            )
             root_seq, root_score, root_details, _ = root_optimizer.run_hybrid_optimization()
             
             print(f"Root Zone skor: {root_score:.2f}/100")
@@ -443,15 +453,32 @@ class MultiZoneOptimizer:
                 print(f"\nZone {zone_idx + 1} ({target_total} ply) - Zone {source_idx + 1}'den drop-off yapılıyor...")
 
                 # Drop-off optimizer oluştur
-                source_optimizer = LaminateOptimizer(dict(Counter(source_seq)), weights=self.rule_weights)
-                drop_optimizer = DropOffOptimizer(source_seq, source_optimizer)
+                source_optimizer = LaminateOptimizer(
+                    dict(Counter(source_seq)),
+                    weights=self.rule_weights,
+                    hard_rules=self.hard_rules,
+                )
+                drop_optimizer = DropOffOptimizer(source_seq, source_optimizer, hard_rules=self.hard_rules)
 
                 try:
                     # Açıya özel drop-off yap
                     new_seq, drop_score, dropped_by_angle = drop_optimizer.optimize_drop_with_angle_targets(target_config)
+
+                    actual_counts = Counter(new_seq)
+                    expected_counts = Counter({int(k): int(v) for k, v in target_config.items() if int(v) > 0})
+                    if len(new_seq) != target_total or actual_counts != expected_counts:
+                        raise ValueError(
+                            f"Zone {zone_idx + 1} hedefini saglamayan dizilim dondu. "
+                            f"Beklenen={dict(expected_counts)}, Gelen={dict(actual_counts)}, "
+                            f"Ply={len(new_seq)}/{target_total}"
+                        )
                     
                     # Fitness hesapla
-                    target_optimizer = LaminateOptimizer(target_config, weights=self.rule_weights)
+                    target_optimizer = LaminateOptimizer(
+                        target_config,
+                        weights=self.rule_weights,
+                        hard_rules=self.hard_rules,
+                    )
                     fitness, details = target_optimizer.calculate_fitness(new_seq)
 
                     # Drop-off sonrası kısa local search ile kaliteyi artır
@@ -497,6 +524,7 @@ class MultiZoneOptimizer:
 
                 except Exception as e:
                     print(f"Zone {zone_idx + 1} drop-off BAŞARISIZ: {e}")
+                    last_error = str(e)
                     drop_success = False
                     break
 
@@ -560,7 +588,7 @@ class MultiZoneOptimizer:
             "root_updated": root_updated,
             "total_iterations": total_iterations,
             "root_index": self.root_index,
-            "error": "Maksimum deneme sayısı aşıldı",
+            "error": last_error or "Maksimum deneme sayısı aşıldı",
             "drop_off_tree": parent_map,
             "neighbor_graph": [list(nb) for nb in self.zone_neighbors] if self.zone_neighbors else [],
         }

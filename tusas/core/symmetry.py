@@ -1,6 +1,76 @@
 from typing import Dict, Any
 
 
+ANGLE_ORDER = [0, 45, -45, 90]
+ANGLE_LABELS = {0: "0°", 45: "+45°", -45: "-45°", 90: "90°"}
+
+
+def normalize_ply_counts_for_symmetry(ply_counts: Dict[int, int]) -> Dict[str, Any]:
+    """
+    Ply sayılarını simetri üretilebilir hale getirir.
+
+    Kural:
+    - Toplam çift ise tüm açı adetleri çift olmalı.
+    - Toplam tek ise yalnızca bir açı tek olabilir (orta ply).
+
+    Multi-zone girişlerinde kullanıcı 7/7 gibi tek değerler verdiğinde
+    otomatik olarak aşağı yuvarlamak için kullanılır.
+    """
+    counts = {}
+    for angle in ANGLE_ORDER:
+        counts[angle] = max(0, int(ply_counts.get(angle, 0) or 0))
+
+    total_before = sum(counts.values())
+    odd_angles = [angle for angle in ANGLE_ORDER if counts[angle] % 2 == 1]
+    adjustments = []
+
+    if total_before % 2 == 0:
+        for angle in odd_angles:
+            old_value = counts[angle]
+            if old_value <= 0:
+                continue
+            counts[angle] = old_value - 1
+            adjustments.append(
+                {
+                    "angle": angle,
+                    "label": ANGLE_LABELS[angle],
+                    "old_value": old_value,
+                    "new_value": counts[angle],
+                    "reason": "even_total_requires_even_counts",
+                }
+            )
+    elif len(odd_angles) > 1:
+        keep_angle = max(
+            odd_angles,
+            key=lambda angle: (counts[angle], -ANGLE_ORDER.index(angle))
+        )
+        for angle in odd_angles:
+            if angle == keep_angle:
+                continue
+            old_value = counts[angle]
+            if old_value <= 0:
+                continue
+            counts[angle] = old_value - 1
+            adjustments.append(
+                {
+                    "angle": angle,
+                    "label": ANGLE_LABELS[angle],
+                    "old_value": old_value,
+                    "new_value": counts[angle],
+                    "reason": "odd_total_allows_only_one_odd_angle",
+                    "kept_middle_angle": keep_angle,
+                }
+            )
+
+    return {
+        "adjusted_counts": counts,
+        "was_adjusted": len(adjustments) > 0,
+        "adjustments": adjustments,
+        "total_before": total_before,
+        "total_after": sum(counts.values()),
+    }
+
+
 def check_symmetry_compatibility(ply_counts: Dict[int, int]) -> Dict[str, Any]:
     """
     Simetri uyumluluğunu kontrol eder.

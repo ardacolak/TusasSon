@@ -11,10 +11,131 @@ class DropOffOptimizer:
     Tapering optimizer for ply drop-off.
     """
 
-    def __init__(self, master_sequence: List[int], base_optimizer: LaminateOptimizer):
+    MAX_CONSECUTIVE_DROPS = 2
+    DEFAULT_HARD_RULES = {
+        "max_two_consecutive_drops": True,
+        "adjacent_0_90": True,
+    }
+
+    def __init__(self, master_sequence: List[int], base_optimizer: LaminateOptimizer, hard_rules: Optional[Dict[str, bool]] = None):
         self.master_sequence = master_sequence
         self.base_opt = base_optimizer
         self.total_plies = len(master_sequence)
+        self.hard_rules = dict(self.DEFAULT_HARD_RULES)
+        inherited = getattr(base_optimizer, "hard_rules", {}) or {}
+        for key, value in inherited.items():
+            if key in self.hard_rules:
+                self.hard_rules[key] = bool(value)
+        if hard_rules:
+            for key, value in hard_rules.items():
+                if key in self.hard_rules:
+                    self.hard_rules[key] = bool(value)
+
+    def _hard_rule_enabled(self, key: str) -> bool:
+        return bool(self.hard_rules.get(key, self.DEFAULT_HARD_RULES.get(key, True)))
+
+    @staticmethod
+    def _flatten_dropped_by_angle(dropped_by_angle: Dict[int, List[int]]) -> List[int]:
+        flat = []
+        for indices in (dropped_by_angle or {}).values():
+            flat.extend(int(idx) for idx in indices)
+        return flat
+
+    def _has_excessive_drop_run(self, drop_indices: List[int]) -> bool:
+        if not self._hard_rule_enabled("max_two_consecutive_drops"):
+            return False
+        sorted_unique = sorted({
+            int(idx) for idx in (drop_indices or [])
+            if idx is not None
+        })
+        if not sorted_unique:
+            return False
+
+        run_len = 1
+        for i in range(1, len(sorted_unique)):
+            if sorted_unique[i] == sorted_unique[i - 1] + 1:
+                run_len += 1
+                if run_len > self.MAX_CONSECUTIVE_DROPS:
+                    return True
+            else:
+                run_len = 1
+        return False
+
+    @staticmethod
+    def _is_forbidden_adjacent(a: int, b: int) -> bool:
+        return (a == 0 and b == 90) or (a == 90 and b == 0)
+
+    def _normalize_sequence_after_drop(
+        self,
+        seq: List[int],
+        pos_map: Optional[List[int]] = None,
+    ) -> Tuple[List[int], Optional[List[int]]]:
+        """
+        Try to repair 0/90 adjacency after a valid drop without changing ply counts.
+
+        When ``pos_map`` is provided, the same swaps are mirrored there so original
+        parent-index tracking remains aligned with the normalized sequence.
+        """
+        normalized_seq = list(seq)
+        normalized_pos = list(pos_map) if pos_map is not None else None
+
+        if not self._hard_rule_enabled("adjacent_0_90"):
+            return normalized_seq, normalized_pos
+
+        if len(normalized_seq) < 2:
+            return normalized_seq, normalized_pos
+
+        max_attempts = len(normalized_seq) * 3
+        attempt = 0
+        while attempt < max_attempts:
+            violation_idx = None
+            for i in range(len(normalized_seq) - 1):
+                if self._is_forbidden_adjacent(normalized_seq[i], normalized_seq[i + 1]):
+                    violation_idx = i
+                    break
+
+            if violation_idx is None:
+                break
+
+            swapped = False
+            candidates = list(range(len(normalized_seq)))
+            random.shuffle(candidates)
+            for j in candidates:
+                if j == violation_idx or j == violation_idx + 1:
+                    continue
+
+                normalized_seq[violation_idx + 1], normalized_seq[j] = (
+                    normalized_seq[j],
+                    normalized_seq[violation_idx + 1],
+                )
+                if normalized_pos is not None:
+                    normalized_pos[violation_idx + 1], normalized_pos[j] = (
+                        normalized_pos[j],
+                        normalized_pos[violation_idx + 1],
+                    )
+
+                if not any(
+                    self._is_forbidden_adjacent(normalized_seq[k], normalized_seq[k + 1])
+                    for k in range(len(normalized_seq) - 1)
+                ):
+                    swapped = True
+                    break
+
+                normalized_seq[violation_idx + 1], normalized_seq[j] = (
+                    normalized_seq[j],
+                    normalized_seq[violation_idx + 1],
+                )
+                if normalized_pos is not None:
+                    normalized_pos[violation_idx + 1], normalized_pos[j] = (
+                        normalized_pos[j],
+                        normalized_pos[violation_idx + 1],
+                    )
+
+            if not swapped:
+                break
+            attempt += 1
+
+        return normalized_seq, normalized_pos
 
     def optimize_drop(self, target_ply: int) -> Tuple[List[int], float, List[int]]:
         """
@@ -118,8 +239,11 @@ class DropOffOptimizer:
                 all_drops.append(mirror_idx)
 
             all_drops.sort()
+            if self._has_excessive_drop_run(all_drops):
+                continue
 
             temp_seq = [ang for i, ang in enumerate(self.master_sequence) if i not in all_drops]
+            temp_seq, _ = self._normalize_sequence_after_drop(temp_seq)
 
             # ✅ 3. MULTI-ANGLE CHECK - Sadece bir açıdan drop olmasın (0° dahil tüm açılar)
             dropped_angles_left = [self.master_sequence[idx] for idx in left_drops]
@@ -347,8 +471,13 @@ class DropOffOptimizer:
                         if seq[right_idx] != ang:
                             continue
 
+                        candidate_drops = self._flatten_dropped_by_angle(dropped_by_angle) + [pos_map[left_idx], pos_map[right_idx]]
+                        if self._has_excessive_drop_run(candidate_drops):
+                            continue
+
                         drop_set = {left_idx, right_idx}
                         temp_seq = [a for i, a in enumerate(seq) if i not in drop_set]
+                        temp_seq, _ = self._normalize_sequence_after_drop(temp_seq)
                         sc, _ = self.base_opt.calculate_fitness(temp_seq)
                         if sc <= 0:
                             continue
@@ -371,6 +500,7 @@ class DropOffOptimizer:
                 for idx in sorted(drop_set, reverse=True):
                     seq.pop(idx)
                     pos_map.pop(idx)
+                seq, pos_map = self._normalize_sequence_after_drop(seq, pos_map)
 
             # Phase 2: Single ply drops for odd-delta angles (asimetrik, hafif simetri kaybı)
             if len(greedy_single_angles) >= 2:
@@ -389,9 +519,13 @@ class DropOffOptimizer:
                 for combo in product(*pos_lists):
                     if len(set(combo)) != len(combo):
                         continue  # Aynı pozisyon birden fazla açı için seçilmişse atla
+                    combo_orig = [pos_map[pos] for pos in combo]
+                    candidate_drops = self._flatten_dropped_by_angle(dropped_by_angle) + combo_orig
+                    if self._has_excessive_drop_run(candidate_drops):
+                        continue
                     drop_set = set(combo)
                     temp = [seq[k] for k in range(n) if k not in drop_set]
-                    temp = LaminateOptimizer._fix_adjacent_0_90(temp)
+                    temp, _ = self._normalize_sequence_after_drop(temp)
                     sc, _ = self.base_opt.calculate_fitness(temp)
                     if sc > best_combo_score:
                         best_combo_score = sc
@@ -410,7 +544,7 @@ class DropOffOptimizer:
                     seq.pop(pos)
                     pos_map.pop(pos)
                 # 0°-90° bitişiklik düzelt
-                seq = LaminateOptimizer._fix_adjacent_0_90(seq)
+                seq, pos_map = self._normalize_sequence_after_drop(seq, pos_map)
             elif len(greedy_single_angles) == 1:
                 # Tek single drop: sıralı kaldırma yeterli
                 ang = greedy_single_angles[0]
@@ -420,7 +554,11 @@ class DropOffOptimizer:
                 for i in range(2, n - 2):
                     if seq[i] != ang:
                         continue
+                    candidate_drops = self._flatten_dropped_by_angle(dropped_by_angle) + [pos_map[i]]
+                    if self._has_excessive_drop_run(candidate_drops):
+                        continue
                     temp = seq[:i] + seq[i + 1:]
+                    temp, _ = self._normalize_sequence_after_drop(temp)
                     sc, _ = self.base_opt.calculate_fitness(temp)
                     if sc > best_score:
                         best_score = sc
@@ -431,6 +569,7 @@ class DropOffOptimizer:
                 dropped_by_angle.setdefault(int(ang), []).append(orig_idx)
                 seq.pop(best_pos)
                 pos_map.pop(best_pos)
+                seq, pos_map = self._normalize_sequence_after_drop(seq, pos_map)
 
             # Final validation
             score, _details = self.base_opt.calculate_fitness(seq)
@@ -512,10 +651,15 @@ class DropOffOptimizer:
                                 orig_left = temp_pos[left_idx]
                                 orig_right = temp_pos[right_idx]
 
+                                candidate_drops = self._flatten_dropped_by_angle(dropped) + [orig_left, orig_right]
+                                if self._has_excessive_drop_run(candidate_drops):
+                                    continue
+
                                 temp_seq.pop(right_idx)
                                 temp_pos.pop(right_idx)
                                 temp_seq.pop(left_idx)
                                 temp_pos.pop(left_idx)
+                                temp_seq, temp_pos = self._normalize_sequence_after_drop(temp_seq, temp_pos)
 
                                 sc, _ = self.base_opt.calculate_fitness(temp_seq)
                                 if sc <= 0:
@@ -572,9 +716,13 @@ class DropOffOptimizer:
                 for combo in product(*pos_lists):
                     if len(set(combo)) != len(combo):
                         continue
+                    combo_orig = [best_pos_map[pos] for pos in combo]
+                    candidate_drops = self._flatten_dropped_by_angle(best_dropped) + combo_orig
+                    if self._has_excessive_drop_run(candidate_drops):
+                        continue
                     drop_set = set(combo)
                     temp = [best_seq[k] for k in range(n) if k not in drop_set]
-                    temp = LaminateOptimizer._fix_adjacent_0_90(temp)
+                    temp, _ = self._normalize_sequence_after_drop(temp)
                     sc, _ = self.base_opt.calculate_fitness(temp)
                     if sc > best_combo_score:
                         best_combo_score = sc
@@ -592,7 +740,7 @@ class DropOffOptimizer:
                     best_seq.pop(pos)
                     best_pos_map.pop(pos)
                 # 0°-90° bitişiklik düzelt
-                best_seq = LaminateOptimizer._fix_adjacent_0_90(best_seq)
+                best_seq, best_pos_map = self._normalize_sequence_after_drop(best_seq, best_pos_map)
             elif len(beam_single_angles) == 1:
                 ang = beam_single_angles[0]
                 n = len(best_seq)
@@ -601,7 +749,11 @@ class DropOffOptimizer:
                 for i in range(2, n - 2):
                     if best_seq[i] != ang:
                         continue
+                    candidate_drops = self._flatten_dropped_by_angle(best_dropped) + [best_pos_map[i]]
+                    if self._has_excessive_drop_run(candidate_drops):
+                        continue
                     temp = best_seq[:i] + best_seq[i + 1:]
+                    temp, _ = self._normalize_sequence_after_drop(temp)
                     sc, _ = self.base_opt.calculate_fitness(temp)
                     if sc > best_sc:
                         best_sc = sc
@@ -613,6 +765,7 @@ class DropOffOptimizer:
                 best_dropped.setdefault(int(ang), []).append(orig_idx)
                 best_seq.pop(best_pos)
                 best_pos_map.pop(best_pos)
+                best_seq, best_pos_map = self._normalize_sequence_after_drop(best_seq, best_pos_map)
 
             # Final validation
             final_score, _ = self.base_opt.calculate_fitness(best_seq)
@@ -846,13 +999,14 @@ class DropOffOptimizer:
                 continue
 
             all_drops.sort()
+            if self._has_excessive_drop_run(all_drops):
+                continue
 
             # Yeni sequence oluştur
             temp_seq = [ang for i, ang in enumerate(self.master_sequence) if i not in all_drops]
 
             # Single drop'lar 0°-90° bitişiklik yaratmışsa swap ile düzelt
-            if single_ply_drops:
-                temp_seq = LaminateOptimizer._fix_adjacent_0_90(temp_seq)
+            temp_seq, _ = self._normalize_sequence_after_drop(temp_seq)
 
             # Fitness hesapla
             score, details = self.base_opt.calculate_fitness(temp_seq)
@@ -921,9 +1075,7 @@ class DropOffOptimizer:
                 new_seq, best_score, dropped_by_angle = fallback_res
                 return new_seq, best_score, dropped_by_angle
 
-            print("UYARI: Hedef açı sayılarına uygun drop kombinasyonu bulunamadı")
-            score, _ = self.base_opt.calculate_fitness(self.master_sequence)
-            return self.master_sequence[:], score, {}
+            raise ValueError("Hedef açı sayılarına uygun drop kombinasyonu bulunamadı")
 
         return best_candidate, best_score, best_dropped_by_angle
 

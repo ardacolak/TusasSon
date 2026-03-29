@@ -392,6 +392,40 @@
               <input type="number" id="rule-weight-R8" min="0" max="100" step="0.5" class="rule-weight-input w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-400"/>
             </div>
           </div>
+          <div class="border-t border-slate-200 pt-5 mb-5">
+            <p class="text-sm font-semibold text-slate-800 mb-1">Hard Kurallar</p>
+            <p class="text-xs text-slate-600 mb-4">Bu ayarlar tum zone'lara global uygulanir. Kapaliysa ilgili kosul hard-fail olarak zorlanmaz.</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <label class="bg-slate-50/80 border border-slate-200 rounded-lg p-4 flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="hard-rule-external-0" class="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                <span>
+                  <span class="text-sm font-medium text-slate-800 block">0° Dis Katman Yasagi</span>
+                  <span class="text-xs text-slate-600">Ilk veya son katmanda 0° olmasin.</span>
+                </span>
+              </label>
+              <label class="bg-slate-50/80 border border-slate-200 rounded-lg p-4 flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="hard-rule-adjacent-0-90" class="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                <span>
+                  <span class="text-sm font-medium text-slate-800 block">0°-90° Komsuluk Yasagi</span>
+                  <span class="text-xs text-slate-600">0° ve 90° yan yana gelmesin.</span>
+                </span>
+              </label>
+              <label class="bg-slate-50/80 border border-slate-200 rounded-lg p-4 flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="hard-rule-external-45" class="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                <span>
+                  <span class="text-sm font-medium text-slate-800 block">Dis Katmanlar ±45°</span>
+                  <span class="text-xs text-slate-600">Ilk 2 ve son 2 katman ±45° olsun.</span>
+                </span>
+              </label>
+              <label class="bg-slate-50/80 border border-slate-200 rounded-lg p-4 flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="hard-rule-max-two-consecutive-drops" class="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                <span>
+                  <span class="text-sm font-medium text-slate-800 block">3 ArdIsIk Drop Yasagi</span>
+                  <span class="text-xs text-slate-600">Drop-off'ta ayni bolgeden 3 katman ust uste cikarilmasin.</span>
+                </span>
+              </label>
+            </div>
+          </div>
           <div class="flex items-center justify-between gap-4 pt-2 flex-wrap">
             <div class="flex items-center gap-4 flex-wrap">
               <button id="rule-weights-reset" type="button" class="px-4 py-2.5 text-sm rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200 transition font-medium">Varsayilana Sifirla</button>
@@ -1013,6 +1047,12 @@
 
     // Kural oranlari (backend ile ayni varsayilanlar)
     const DEFAULT_RULE_WEIGHTS = { R1: 18, R2: 12, R3: 13, R4: 12, R5: 14, R6: 20.5, R7: 3.5, R8: 7 };
+    const DEFAULT_HARD_RULES = {
+      external_0: true,
+      adjacent_0_90: true,
+      external_45: true,
+      max_two_consecutive_drops: true,
+    };
 
     function getRuleWeights() {
       const out = {};
@@ -1030,6 +1070,33 @@
         if (el) el.value = DEFAULT_RULE_WEIGHTS[key];
       });
       updateRuleWeightsSum();
+    }
+
+    function getHardRules() {
+      return {
+        external_0: !!document.getElementById('hard-rule-external-0')?.checked,
+        adjacent_0_90: !!document.getElementById('hard-rule-adjacent-0-90')?.checked,
+        external_45: !!document.getElementById('hard-rule-external-45')?.checked,
+        max_two_consecutive_drops: !!document.getElementById('hard-rule-max-two-consecutive-drops')?.checked,
+      };
+    }
+
+    function setHardRulesToDefaults() {
+      const mapping = {
+        external_0: 'hard-rule-external-0',
+        adjacent_0_90: 'hard-rule-adjacent-0-90',
+        external_45: 'hard-rule-external-45',
+        max_two_consecutive_drops: 'hard-rule-max-two-consecutive-drops',
+      };
+      Object.entries(mapping).forEach(([key, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = !!DEFAULT_HARD_RULES[key];
+      });
+    }
+
+    function resetRuleConfigToDefaults() {
+      setRuleWeightsToDefaults();
+      setHardRulesToDefaults();
     }
 
     function updateRuleWeightsSum() {
@@ -1082,7 +1149,7 @@
           if (rwChevron) rwChevron.style.transform = isHidden ? '' : 'rotate(-90deg)';
         });
       }
-      document.getElementById('rule-weights-reset')?.addEventListener('click', setRuleWeightsToDefaults);
+      document.getElementById('rule-weights-reset')?.addEventListener('click', resetRuleConfigToDefaults);
       document.getElementById('rule-weights-optimize-btn')?.addEventListener('click', () => {
         if (typeof pdRunOptimize === 'function') pdRunOptimize();
         else if (document.getElementById('pd-optimize-btn')) document.getElementById('pd-optimize-btn').click();
@@ -1090,7 +1157,7 @@
       document.querySelectorAll('.rule-weight-input').forEach(inp => {
         inp.addEventListener('input', updateRuleWeightsSum);
       });
-      setRuleWeightsToDefaults();
+      resetRuleConfigToDefaults();
       if (rwChevron) rwChevron.style.transform = 'rotate(-90deg)';
 
       // Ply input live total
@@ -1404,17 +1471,75 @@
       if (el) el.textContent = `Toplam: ${t} ply`;
     }
 
+    function normalizeZoneCountsForSymmetry(zone) {
+      const angleOrder = ['0', '45', '-45', '90'];
+      const angleLabels = { '0': '0°', '45': '+45°', '-45': '-45°', '90': '90°' };
+      const counts = {};
+      angleOrder.forEach(angle => {
+        counts[angle] = Math.max(0, parseInt(zone?.[angle], 10) || 0);
+      });
+
+      const totalBefore = angleOrder.reduce((sum, angle) => sum + counts[angle], 0);
+      const oddAngles = angleOrder.filter(angle => counts[angle] % 2 === 1);
+      const adjustments = [];
+
+      if (totalBefore % 2 === 0) {
+        oddAngles.forEach(angle => {
+          const oldValue = counts[angle];
+          if (oldValue > 0) {
+            counts[angle] = oldValue - 1;
+            adjustments.push(`${angleLabels[angle]}: ${oldValue} → ${counts[angle]}`);
+          }
+        });
+      } else if (oddAngles.length > 1) {
+        const keepOdd = oddAngles
+          .slice()
+          .sort((a, b) => (counts[b] - counts[a]) || (angleOrder.indexOf(a) - angleOrder.indexOf(b)))[0];
+
+        oddAngles.forEach(angle => {
+          if (angle === keepOdd) return;
+          const oldValue = counts[angle];
+          if (oldValue > 0) {
+            counts[angle] = oldValue - 1;
+            adjustments.push(`${angleLabels[angle]}: ${oldValue} → ${counts[angle]}`);
+          }
+        });
+      }
+
+      return {
+        counts,
+        adjusted: adjustments.length > 0,
+        adjustments,
+        totalBefore,
+        totalAfter: angleOrder.reduce((sum, angle) => sum + counts[angle], 0),
+      };
+    }
+
+    function formatSymmetryAdjustmentMessage(zoneName, result) {
+      if (!result?.adjusted) return '';
+      return `${zoneName}: simetri için ${result.adjustments.join(', ')}. Toplam ${result.totalBefore} → ${result.totalAfter} ply.`;
+    }
+
     function pdApplyPopup() {
       if (pdSelectedIdx < 0) return;
       pdSaveState(); // Save state before ply change
       const r = pdRegions[pdSelectedIdx];
-      r.plyCounts['0'] = parseInt(document.getElementById('pd-ply-0').value) || 0;
-      r.plyCounts['90'] = parseInt(document.getElementById('pd-ply-90').value) || 0;
-      r.plyCounts['45'] = parseInt(document.getElementById('pd-ply-45').value) || 0;
-      r.plyCounts['-45'] = parseInt(document.getElementById('pd-ply--45').value) || 0;
+      const normalized = normalizeZoneCountsForSymmetry({
+        '0': document.getElementById('pd-ply-0').value,
+        '90': document.getElementById('pd-ply-90').value,
+        '45': document.getElementById('pd-ply-45').value,
+        '-45': document.getElementById('pd-ply--45').value,
+      });
+      r.plyCounts['0'] = normalized.counts['0'];
+      r.plyCounts['90'] = normalized.counts['90'];
+      r.plyCounts['45'] = normalized.counts['45'];
+      r.plyCounts['-45'] = normalized.counts['-45'];
       pdRegionPopup.classList.add('hidden');
       pdUpdateUI();
       pdRender();
+      if (normalized.adjusted) {
+        alert(formatSymmetryAdjustmentMessage(r.label || `Zone ${pdSelectedIdx + 1}`, normalized));
+      }
     }
 
     function pdDeleteSelected() {
@@ -1626,12 +1751,21 @@
     // Panel Designer optimize button
     async function pdRunOptimize() {
       // Collect zones from regions
-      const zones = pdRegions.map(r => ({
-        '0': r.plyCounts['0'] || 0,
-        '90': r.plyCounts['90'] || 0,
-        '45': r.plyCounts['45'] || 0,
-        '-45': r.plyCounts['-45'] || 0,
-      }));
+      const zones = [];
+      const symmetryAdjustments = [];
+      pdRegions.forEach((r, idx) => {
+        const normalized = normalizeZoneCountsForSymmetry({
+          '0': r.plyCounts['0'] || 0,
+          '90': r.plyCounts['90'] || 0,
+          '45': r.plyCounts['45'] || 0,
+          '-45': r.plyCounts['-45'] || 0,
+        });
+        r.plyCounts = { ...normalized.counts };
+        zones.push({ ...normalized.counts });
+        if (normalized.adjusted) {
+          symmetryAdjustments.push(formatSymmetryAdjustmentMessage(r.label || `Zone ${idx + 1}`, normalized));
+        }
+      });
 
       // Collect bounds (2D konumlar) from regions
       const bounds = pdRegions.map(r => ({
@@ -1650,9 +1784,15 @@
         alert('En az 2 bolge gerekli.');
         return;
       }
+      if (symmetryAdjustments.length > 0) {
+        pdUpdateUI();
+        pdRender();
+        alert(`Simetri icin su duzeltmeler uygulandi:\n\n${symmetryAdjustments.join('\n')}`);
+      }
 
       // Kural oranlari toplami 100 olmali
       const rule_weights = getRuleWeights();
+      const hard_rules = getHardRules();
       const weightsTotal = Object.values(rule_weights).reduce((a, b) => a + b, 0);
       if (Math.abs(weightsTotal - 100) > 0.01) {
         alert('Kural oranlari toplami 100 olmak zorundadir. Su an: ' + Math.round(weightsTotal * 10) / 10 + '. Oranlari duzeltip tekrar deneyin.');
@@ -1666,10 +1806,12 @@
       try {
         // Use the standard endpoint (not stream) to match Control Panel behavior
         const useSurrogate = document.getElementById('ml-surrogate-toggle')?.checked || false;
+        window._lastRuleWeights = { ...rule_weights };
+        window._lastHardRules = { ...hard_rules };
         const response = await fetch(`${API_BASE}/optimize_multi_zone`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ zones, bounds, panel_scale_mm: 300, rule_weights, use_surrogate: useSurrogate })
+          body: JSON.stringify({ zones, bounds, panel_scale_mm: 300, rule_weights, hard_rules, use_surrogate: useSurrogate })
         });
 
         const data = await response.json();
@@ -1928,9 +2070,11 @@
       }
     }
 
-    function collectZoneData() {
+    function collectZoneData(options = {}) {
+      const applyNormalization = options.applyNormalization !== false;
       const cards = getZoneCards();
       const zones = [];
+      const symmetryAdjustments = [];
       for (let i = 0; i < cards.length; i++) {
         const card = cards[i];
         const inputs = card.querySelectorAll('input[type="number"]');
@@ -1940,9 +2084,20 @@
           '-45': parseInt(inputs[2].value) || 0,
           '90': parseInt(inputs[3].value) || 0,
         };
-        zones.push(zone);
+        const normalized = applyNormalization ? normalizeZoneCountsForSymmetry(zone) : { counts: zone, adjusted: false, adjustments: [] };
+        if (applyNormalization) {
+          inputs[0].value = normalized.counts['0'];
+          inputs[1].value = normalized.counts['45'];
+          inputs[2].value = normalized.counts['-45'];
+          inputs[3].value = normalized.counts['90'];
+          updateZoneTotal(i);
+        }
+        zones.push(normalized.counts);
+        if (normalized.adjusted) {
+          symmetryAdjustments.push(formatSymmetryAdjustmentMessage(`Zone ${i + 1}`, normalized));
+        }
       }
-      return zones;
+      return { zones, symmetryAdjustments };
     }
 
     // Zone sayısı değiştiğinde input'ları yeniden oluştur (dropdown ile)
@@ -1960,7 +2115,7 @@
     multizoneForm.addEventListener('submit', async (e) => {
       e.preventDefault();
 
-      const zones = collectZoneData();
+      const { zones, symmetryAdjustments } = collectZoneData({ applyNormalization: true });
 
       // Validasyon
       for (let i = 0; i < zones.length; i++) {
@@ -1970,9 +2125,13 @@
           return;
         }
       }
+      if (symmetryAdjustments.length > 0) {
+        alert(`Simetri icin su duzeltmeler uygulandi:\n\n${symmetryAdjustments.join('\n')}`);
+      }
 
       // Kural oranlari toplami 100 olmali
       const rule_weights = getRuleWeights();
+      const hard_rules = getHardRules();
       const weightsTotal = Object.values(rule_weights).reduce((a, b) => a + b, 0);
       if (Math.abs(weightsTotal - 100) > 0.01) {
         alert('Kural oranlari toplami 100 olmak zorundadir. Su an: ' + Math.round(weightsTotal * 10) / 10 + '. Oranlari duzeltip tekrar deneyin.');
@@ -1985,10 +2144,12 @@
 
       try {
         const useSurrogate2 = document.getElementById('ml-surrogate-toggle')?.checked || false;
+        window._lastRuleWeights = { ...rule_weights };
+        window._lastHardRules = { ...hard_rules };
         const response = await fetch(`${API_BASE}/optimize_multi_zone`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ zones, rule_weights, use_surrogate: useSurrogate2 })
+          body: JSON.stringify({ zones, rule_weights, hard_rules, use_surrogate: useSurrogate2 })
         });
 
         const data = await response.json();
@@ -2513,11 +2674,8 @@
       };
 
       const dotColorMap = { ...colorMap };
-
       const sortedZones = [...zones].filter(z => z !== null).sort((a, b) => b.ply_count - a.ply_count);
       const maxLen = sortedZones[0]?.ply_count || 1;
-      const rootZone = sortedZones.find(z => z.is_root) || sortedZones[0];
-      const rootSeq = rootZone ? rootZone.sequence : [];
 
       function normalizeAngleCounts(obj) {
         const out = { '0': 0, '90': 0, '45': 0, '-45': 0 };
@@ -2529,6 +2687,66 @@
           }
         }
         return out;
+      }
+
+      function getDroppedSet(tr) {
+        const dropped = Array.isArray(tr?.dropped_indices)
+          ? tr.dropped_indices
+          : Object.values(tr?.dropped_by_angle || {}).flat();
+        return new Set(
+          dropped
+            .map(n => parseInt(n, 10))
+            .filter(n => Number.isFinite(n) && n >= 0)
+        );
+      }
+
+      function appendVerticalSequence(targetEl, seq, options = {}) {
+        const sequence = Array.isArray(seq) ? seq : [];
+        const seqLen = sequence.length;
+        const seqIsOdd = seqLen % 2 === 1;
+        const seqMidIndex = Math.floor(seqLen / 2);
+        const topSpacer = Math.floor((maxLen - seqLen) / 2);
+        const droppedSet = options.droppedSet || null;
+        const emptyClass = options.emptyClass || 'w-full h-4';
+        const droppedClass = options.droppedClass || 'w-full h-4 rounded-[2px] bg-slate-200/60 border border-dashed border-slate-300';
+
+        for (let slot = 0; slot < maxLen; slot++) {
+          const seqIdx = slot - topSpacer;
+
+          if (!seqIsOdd && seqIdx === seqMidIndex) {
+            const symLine = document.createElement('div');
+            symLine.className = 'w-full h-[5px] bg-amber-500 rounded-full my-1 shadow-[0_0_6px_rgba(245,158,11,0.5)]';
+            symLine.title = 'Simetri Ekseni';
+            targetEl.appendChild(symLine);
+          }
+
+          if (seqIdx < 0 || seqIdx >= seqLen) {
+            const empty = document.createElement('div');
+            empty.className = emptyClass;
+            targetEl.appendChild(empty);
+            continue;
+          }
+
+          const angle = sequence[seqIdx];
+          const isDropped = droppedSet ? droppedSet.has(seqIdx) : false;
+          const block = document.createElement('div');
+
+          if (isDropped) {
+            block.className = droppedClass;
+            block.title = `${angle}° - Çıkarıldı`;
+          } else {
+            block.className = `w-full h-4 rounded-[2px] ${colorMap[angle.toString()] || 'bg-slate-500'} flex items-center justify-center text-[8px] font-mono font-semibold text-white ring-1 ring-white/20`;
+            block.textContent = `${angle}°`;
+            block.title = `Ply ${seqIdx + 1}: ${angle}°`;
+          }
+
+          if (seqIsOdd && seqIdx === seqMidIndex && !isDropped) {
+            block.style.position = 'relative';
+            block.classList.add('ring-2', 'ring-amber-500');
+          }
+
+          targetEl.appendChild(block);
+        }
       }
 
       const zoneByIndex = new Map();
@@ -2548,115 +2766,159 @@
         });
       }
 
-      // Ana konteyner: zone'lar yan yana
+      const rootZone = (zones || []).find(z => z?.is_root) || sortedZones[0] || null;
+      const rootSeq = Array.isArray(rootZone?.sequence) ? rootZone.sequence : [];
+      const rootLen = rootSeq.length || maxLen;
+      const rootIsOdd = rootLen % 2 === 1;
+      const rootMidIndex = Math.floor(rootLen / 2);
+      const zoneDropHistoryCache = new Map();
+
+      function buildZoneDropHistory(zoneIndex) {
+        if (zoneDropHistoryCache.has(zoneIndex)) return zoneDropHistoryCache.get(zoneIndex);
+
+        const zoneObj = zoneByIndex.get(zoneIndex) || null;
+        const isZoneRoot = !!zoneObj?.is_root;
+        const fallbackState = {
+          currentRootIndices: Array.from({ length: rootLen }, (_, i) => i),
+          oldDroppedRootSet: new Set(),
+          newDroppedRootSet: new Set(),
+          allDroppedRootSet: new Set(),
+        };
+
+        if (isZoneRoot || !rootSeq.length) {
+          zoneDropHistoryCache.set(zoneIndex, fallbackState);
+          return fallbackState;
+        }
+
+        const tr = transitionByTo.get(zoneIndex);
+        if (!tr) {
+          zoneDropHistoryCache.set(zoneIndex, fallbackState);
+          return fallbackState;
+        }
+
+        const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
+        const parentState = buildZoneDropHistory(parentIndex);
+        const droppedSet = getDroppedSet(tr);
+        const newDroppedRootIndices = [];
+        const nextCurrentRootIndices = [];
+
+        // Dikey görünümde satırlar sabit kalsın diye kök slot eşlemesini
+        // sadece parent üzerindeki gerçek drop indekslerinden türetiyoruz.
+        // Böylece aynı açılardan birden fazla olsa bile "hangi ply çıktı"
+        // bilgisi yatay drop-off haritasıyla birebir aynı kalır.
+        parentState.currentRootIndices.forEach((rootIdx, parentSeqIdx) => {
+          if (droppedSet.has(parentSeqIdx)) {
+            newDroppedRootIndices.push(rootIdx);
+            return;
+          }
+          nextCurrentRootIndices.push(rootIdx);
+        });
+
+        const oldDroppedRootSet = new Set(parentState.allDroppedRootSet);
+        const newDroppedRootSet = new Set(newDroppedRootIndices);
+        const allDroppedRootSet = new Set([...oldDroppedRootSet, ...newDroppedRootSet]);
+        const state = {
+          currentRootIndices: nextCurrentRootIndices,
+          oldDroppedRootSet,
+          newDroppedRootSet,
+          allDroppedRootSet,
+        };
+        zoneDropHistoryCache.set(zoneIndex, state);
+        return state;
+      }
+
+      function appendVerticalRootAlignedDropHistory(targetEl, state) {
+        for (let seqIdx = 0; seqIdx < rootLen; seqIdx++) {
+          if (!rootIsOdd && seqIdx === rootMidIndex) {
+            const symLine = document.createElement('div');
+            symLine.className = 'w-full h-[5px] bg-amber-500 rounded-full my-1 shadow-[0_0_6px_rgba(245,158,11,0.5)]';
+            symLine.title = 'Simetri Ekseni';
+            targetEl.appendChild(symLine);
+          }
+
+          const angle = rootSeq[seqIdx];
+          const block = document.createElement('div');
+          const blockColor = colorMap[angle?.toString()] || 'bg-slate-500';
+          const angleLabel = `${angle}\u00B0`;
+          const isOldDropped = state.oldDroppedRootSet.has(seqIdx);
+          const isNewDropped = state.newDroppedRootSet.has(seqIdx);
+
+          if (isNewDropped) {
+            block.className = `relative w-full h-4 rounded-[2px] ${blockColor} opacity-40 ring-1 ring-white/10 overflow-hidden`;
+            block.innerHTML = `
+              <span class="absolute inset-0 flex items-center justify-between px-1.5 text-[9px] font-black tracking-tight">
+                <span class="text-red-700 drop-shadow-[0_0_1px_rgba(255,255,255,0.45)]">X</span>
+                <span class="text-slate-950 drop-shadow-[0_0_1px_rgba(255,255,255,0.45)]">X</span>
+                <span class="text-red-700 drop-shadow-[0_0_1px_rgba(255,255,255,0.45)]">X</span>
+                <span class="text-slate-950 drop-shadow-[0_0_1px_rgba(255,255,255,0.45)]">X</span>
+                <span class="text-red-700 drop-shadow-[0_0_1px_rgba(255,255,255,0.45)]">X</span>
+              </span>
+            `;
+            block.title = `Ply ${seqIdx + 1}: ${angleLabel} - Bu adımda çıkarıldı`;
+          } else if (isOldDropped) {
+            block.className = 'w-full h-4 rounded-[2px] bg-white/90 border border-dashed border-slate-300';
+            block.title = `Ply ${seqIdx + 1}: ${angleLabel} - Önceden çıkarıldı`;
+          } else {
+            block.className = `w-full h-4 rounded-[2px] ${blockColor} flex items-center justify-center text-[8px] font-mono font-semibold text-white ring-1 ring-white/20`;
+            block.textContent = angleLabel;
+            block.title = `Ply ${seqIdx + 1}: ${angleLabel}`;
+          }
+
+          if (rootIsOdd && seqIdx === rootMidIndex && !isOldDropped && !isNewDropped) {
+            block.style.position = 'relative';
+            block.classList.add('ring-2', 'ring-amber-500');
+          }
+
+          targetEl.appendChild(block);
+        }
+      }
+
       const container = document.createElement('div');
       container.className = 'flex gap-2 overflow-x-auto pb-2';
-
-      // ── Tüm zone'lar root dizilimi üzerinden hizalanacak ──
-      const rootLen = rootSeq.length;
-      const rootMid = Math.floor(rootLen / 2);
-      const rootIsOdd = rootLen % 2 === 1;
-
-      // ── Her zone için root pozisyonlarındaki dropped set'i hesapla (zincirleme) ──
-      // Zone'dan root'a giden yolu bulup, yol üzerindeki tüm drop'ları birleştir
-      function getDroppedIndicesFromRoot(zoneIdx) {
-        const allDropped = new Set();
-        let currentIdx = zoneIdx;
-        const visited = new Set();
-        while (currentIdx !== undefined && !visited.has(currentIdx)) {
-          visited.add(currentIdx);
-          const currentZone = zoneByIndex.get(currentIdx);
-          if (currentZone && currentZone.is_root) break;
-          const tr = transitionByTo.get(currentIdx);
-          if (!tr) break;
-          if (Array.isArray(tr.dropped_indices)) {
-            // Bu transition'ın dropped_indices'i parent sequence üzerinden
-            // Bunları root sequence indekslerine çevirmemiz gerek
-            tr.dropped_indices.forEach(di => {
-              const idx = parseInt(di, 10);
-              if (Number.isFinite(idx) && idx >= 0) allDropped.add(idx);
-            });
-          }
-          const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
-          currentIdx = parentIndex;
-        }
-        return allDropped;
-      }
 
       sortedZones.forEach((zone) => {
         const isRoot = zone.is_root;
         const seq = Array.isArray(zone.sequence) ? zone.sequence : [];
-        const seqLen = seq.length;
         const angleCounts = normalizeAngleCounts(zone.ply_counts);
 
-        // Drop-off hesaplamaları - ROOT dizilimi üzerinden
-        let droppedFromRoot = new Set();
         let parentZoneRef = null;
+        let parentSeq = [];
+        let droppedSet = new Set();
+        const zoneDropHistory = buildZoneDropHistory(zone.index);
+
         if (!isRoot) {
           const tr = transitionByTo.get(zone.index);
           if (tr) {
             const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
             parentZoneRef = zoneByIndex.get(parentIndex) || null;
+            parentSeq = parentZoneRef && Array.isArray(parentZoneRef.sequence) ? parentZoneRef.sequence : [];
+            droppedSet = getDroppedSet(tr);
           }
-          droppedFromRoot = getDroppedIndicesFromRoot(zone.index);
         }
 
-        // Sütun
         const col = document.createElement('div');
         col.className = 'flex flex-col items-center min-w-[130px] max-w-[180px] flex-1 bg-white/80 border border-slate-300 rounded-lg px-2 py-2 shadow-sm';
 
-        // Başlık
         const header = document.createElement('div');
         header.className = 'text-center mb-2 pb-1.5 border-b border-slate-200 w-full';
-        let headerHTML = `
+        header.innerHTML = `
           <span class="text-[10px] font-bold ${isRoot ? 'text-blue-600' : 'text-slate-700'}">
             Zone ${zone.index + 1} ${isRoot ? '(Root)' : ''}
           </span>
           <br/>
           <span class="text-[9px] text-slate-500">${zone.ply_count} ply • ${zone.fitness.toFixed(1)}pts</span>
         `;
-        header.innerHTML = headerHTML;
         col.appendChild(header);
 
-        // Katmanlar dikey — TÜM ZONE'LAR ROOT DİZİLİMİ ÜZERİNDEN
         const layerContainer = document.createElement('div');
         layerContainer.className = 'flex flex-col items-center gap-[1px] w-full';
-
-        rootSeq.forEach((angle, idx) => {
-          // Simetri ekseni
-          if (!rootIsOdd && idx === rootMid) {
-            const symLine = document.createElement('div');
-            symLine.className = 'w-full h-[5px] bg-amber-500 rounded-full my-1 shadow-[0_0_6px_rgba(245,158,11,0.5)]';
-            symLine.title = 'Simetri Ekseni';
-            layerContainer.appendChild(symLine);
-          }
-
-          const isDropped = !isRoot && droppedFromRoot.has(idx);
-          const block = document.createElement('div');
-
-          if (isDropped) {
-            // Düşürülmüş katman: boşluk
-            block.className = 'w-full h-4 rounded-[2px] bg-slate-200/50 border border-dashed border-slate-300';
-            block.title = `${angle}° - Çıkarıldı`;
-          } else {
-            // Mevcut katman: renkli kutu
-            block.className = `w-full h-4 rounded-[2px] ${colorMap[angle.toString()] || 'bg-slate-500'} flex items-center justify-center text-[8px] font-mono font-semibold text-white ring-1 ring-white/20`;
-            block.textContent = `${angle}°`;
-            block.title = `Ply ${idx + 1}: ${angle}°`;
-          }
-
-          // Simetri ekseni - tek sayıda ortadaki ply
-          if (rootIsOdd && idx === rootMid) {
-            block.style.position = 'relative';
-            block.classList.add('ring-2', 'ring-amber-500');
-          }
-
-          layerContainer.appendChild(block);
-        });
-
+        if (!isRoot && rootSeq.length > 0) {
+          appendVerticalRootAlignedDropHistory(layerContainer, zoneDropHistory);
+        } else {
+          appendVerticalSequence(layerContainer, seq);
+        }
         col.appendChild(layerContainer);
 
-        // Komşuluk bilgisi
         const zoneNeighbors = zoneNeighborMap.get(zone.index) || [];
         if (zoneNeighbors.length > 0) {
           const neighborDiv = document.createElement('div');
@@ -2674,7 +2936,6 @@
           col.appendChild(neighborDiv);
         }
 
-        // Referans bilgisi (non-root, komşu zonların altında)
         if (!isRoot && parentZoneRef) {
           const refDiv = document.createElement('div');
           refDiv.className = 'flex items-center justify-center gap-1 mt-1.5 w-full';
@@ -2682,83 +2943,57 @@
           col.appendChild(refDiv);
         }
 
-        // Temiz dizilim butonu (Non-root) — sağa temiz sütun açılır
-        let cleanCol = null;
-        if (!isRoot && droppedFromRoot.size > 0) {
+        let dropoffCol = null;
+        if (!isRoot && rootSeq.length > 0 && zoneDropHistory.allDroppedRootSet.size > 0) {
           const toggleBtn = document.createElement('button');
           toggleBtn.type = 'button';
           toggleBtn.className = 'flex items-center gap-1 text-[8px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-1.5 py-0.5 rounded border border-slate-300 shadow-sm transition-all w-full justify-center mt-2';
           toggleBtn.innerHTML = `
-            <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h16"/></svg>
-            <span>Temiz Dizilim</span>
+            <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6M12 9v6M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9z"/></svg>
+            <span>Drop-Off Haritası</span>
           `;
           col.appendChild(toggleBtn);
+          toggleBtn.querySelector('span').textContent = 'Temiz Dizilimi Göster';
 
-          // Sağ tarafa açılacak temiz dizilim sütunu (başlangıçta gizli)
-          cleanCol = document.createElement('div');
-          cleanCol.className = 'hidden flex-col items-center min-w-[130px] max-w-[180px] flex-1 bg-blue-50/80 border border-blue-300/60 rounded-lg px-2 py-2 shadow-sm';
+          dropoffCol = document.createElement('div');
+          dropoffCol.className = 'hidden flex-col items-center min-w-[130px] max-w-[180px] flex-1 bg-slate-50/90 border border-slate-300 rounded-lg px-2 py-2 shadow-sm';
 
-          // Temiz dizilim başlık
-          const cleanHeader = document.createElement('div');
-          cleanHeader.className = 'text-center mb-2 pb-1.5 border-b border-blue-200 w-full';
-          cleanHeader.innerHTML = `
-            <span class="text-[10px] font-bold text-blue-600">Dizilim</span>
+          const dropoffHeader = document.createElement('div');
+          dropoffHeader.className = 'text-center mb-2 pb-1.5 border-b border-slate-200 w-full';
+          dropoffHeader.innerHTML = `
+            <span class="text-[10px] font-bold text-slate-700">Drop-Off</span>
             <br/>
-            <span class="text-[9px] text-blue-400">Zone ${zone.index + 1} (${zone.ply_count} ply)</span>
+            <span class="text-[9px] text-slate-500">Ref: Zone ${parentZoneRef ? parentZoneRef.index + 1 : zone.index + 1}</span>
           `;
-          cleanCol.appendChild(cleanHeader);
+          dropoffCol.appendChild(dropoffHeader);
+          const dropoffHeaderSpans = dropoffHeader.querySelectorAll('span');
+          if (dropoffHeaderSpans[0]) dropoffHeaderSpans[0].textContent = 'Temiz Dizilim';
+          if (dropoffHeaderSpans[1]) dropoffHeaderSpans[1].textContent = `Zone ${zone.index + 1}`;
 
-          // Temiz katmanlar — root üzerinden, dropped olanlar boşluk yok sadece kalan
-          const cleanLayers = document.createElement('div');
-          cleanLayers.className = 'flex flex-col items-center gap-[1px] w-full';
+          const dropoffLayers = document.createElement('div');
+          dropoffLayers.className = 'flex flex-col items-center gap-[1px] w-full';
+          appendVerticalSequence(dropoffLayers, seq);
+          dropoffCol.appendChild(dropoffLayers);
 
-          // Root bazlı: aynı pozisyonlarda, dropped olanlar görünmez boşluk
-          rootSeq.forEach((angle, idx) => {
-            if (!rootIsOdd && idx === rootMid) {
-              const symLine = document.createElement('div');
-              symLine.className = 'w-full h-[5px] bg-amber-500 rounded-full my-1 shadow-[0_0_6px_rgba(245,158,11,0.5)]';
-              cleanLayers.appendChild(symLine);
-            }
-
-            const isDropped = droppedFromRoot.has(idx);
-            const block = document.createElement('div');
-
-            if (isDropped) {
-              // Görünmez boşluk (hizalama için yer tutucu)
-              block.className = 'w-full h-4';
-            } else {
-              block.className = `w-full h-4 rounded-[2px] ${colorMap[angle.toString()] || 'bg-slate-500'} flex items-center justify-center text-[8px] font-mono font-semibold text-white ring-1 ring-white/20`;
-              block.textContent = `${angle}°`;
-              block.title = `${angle}°`;
-            }
-
-            if (rootIsOdd && idx === rootMid && !isDropped) {
-              block.classList.add('ring-2', 'ring-amber-500');
-            }
-
-            cleanLayers.appendChild(block);
-          });
-
-          cleanCol.appendChild(cleanLayers);
-
-          // Toggle logic
           toggleBtn.onclick = () => {
-            const isHidden = cleanCol.classList.contains('hidden');
+            const isHidden = dropoffCol.classList.contains('hidden');
             if (isHidden) {
-              cleanCol.classList.remove('hidden');
-              cleanCol.classList.add('flex');
+              dropoffCol.classList.remove('hidden');
+              dropoffCol.classList.add('flex');
               toggleBtn.classList.add('bg-slate-200');
               toggleBtn.querySelector('span').textContent = 'Gizle';
             } else {
-              cleanCol.classList.add('hidden');
-              cleanCol.classList.remove('flex');
+              dropoffCol.classList.add('hidden');
+              dropoffCol.classList.remove('flex');
               toggleBtn.classList.remove('bg-slate-200');
-              toggleBtn.querySelector('span').textContent = 'Temiz Dizilim';
+              toggleBtn.querySelector('span').textContent = 'Drop-Off Haritası';
+            }
+            if (dropoffCol.classList.contains('hidden')) {
+              toggleBtn.querySelector('span').textContent = 'Temiz Dizilimi Göster';
             }
           };
         }
 
-        // Açı sayıları (alt kısım)
         const legend = document.createElement('div');
         legend.className = 'mt-2 pt-1.5 border-t border-slate-200 w-full flex flex-col gap-0 text-[8px] font-mono';
         const angleOrder = ['0', '90', '45', '-45'];
@@ -2786,9 +3021,8 @@
         col.appendChild(legend);
 
         container.appendChild(col);
-        // Temiz dizilim sütununu zone'un hemen sağına ekle
-        if (cleanCol) {
-          container.appendChild(cleanCol);
+        if (dropoffCol) {
+          container.appendChild(dropoffCol);
         }
       });
 
@@ -6292,6 +6526,7 @@
           optimization_params: {
             zone_count: zones.filter(z => z !== null).length,
             rule_weights: window._lastRuleWeights || {},
+            hard_rules: window._lastHardRules || {},
             population_size: window._lastPopSize || '-',
             generations: window._lastGenCount || '-',
             duration_seconds: window._lastDuration || '-',

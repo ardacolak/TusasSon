@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, request, send_from_directory, Response, st
 from ..core.dropoff_optimizer import DropOffOptimizer
 from ..core.laminate_optimizer import LaminateOptimizer
 from ..core.multi_zone_optimizer import MultiZoneOptimizer
-from ..core.symmetry import check_symmetry_compatibility
+from ..core.symmetry import check_symmetry_compatibility, normalize_ply_counts_for_symmetry
 from ..state import get_zone_manager, set_zone_manager
 from ..zones.manager import ZoneManager
 from ..zones.models import Zone
@@ -24,6 +24,28 @@ except ImportError:
 
 
 bp = Blueprint("tusas_api", __name__)
+
+
+def _normalize_multi_zone_symmetry(zones):
+    normalized_zones = []
+    symmetry_adjustments = []
+
+    for i, zone in enumerate(zones):
+        converted_zone = {int(k): int(v) for k, v in zone.items()}
+        normalized = normalize_ply_counts_for_symmetry(converted_zone)
+        normalized_zones.append(normalized["adjusted_counts"])
+        if normalized["was_adjusted"]:
+            symmetry_adjustments.append(
+                {
+                    "zone_index": i,
+                    "zone_label": f"Zone {i + 1}",
+                    "total_before": normalized["total_before"],
+                    "total_after": normalized["total_after"],
+                    "adjustments": normalized["adjustments"],
+                }
+            )
+
+    return normalized_zones, symmetry_adjustments
 
 
 @bp.route("/")
@@ -138,17 +160,27 @@ def optimize_multi_zone():
         except (ValueError, TypeError):
             return jsonify({"error": f"Zone {i + 1} geçersiz değerler içeriyor"}), 400
 
+    zones, symmetry_adjustments = _normalize_multi_zone_symmetry(zones)
+
     # Opsiyonel: zone konumları (Panel Designer'dan)
     bounds = payload.get("bounds", None)  # [{"x":..,"y":..,"w":..,"h":..}, ...]
     panel_scale_mm = float(payload.get("panel_scale_mm", 300))
     # Opsiyonel: kural agirliklari (R1..R8 oranlari)
     rule_weights = payload.get("rule_weights", None)  # {"R1": 18, "R2": 12, ...}
+    hard_rules = payload.get("hard_rules", None)
     use_surrogate = bool(payload.get("use_surrogate", False))
 
     start_time = time.time()
 
     try:
-        optimizer = MultiZoneOptimizer(zones, bounds=bounds, panel_scale_mm=panel_scale_mm, rule_weights=rule_weights, use_surrogate=use_surrogate)
+        optimizer = MultiZoneOptimizer(
+            zones,
+            bounds=bounds,
+            panel_scale_mm=panel_scale_mm,
+            rule_weights=rule_weights,
+            hard_rules=hard_rules,
+            use_surrogate=use_surrogate,
+        )
         result = optimizer.optimize_all()
     except Exception as e:
         # Hata mesajını UTF-8 güvenli şekilde al (Windows charmap hatası önlenir)
@@ -190,6 +222,7 @@ def optimize_multi_zone():
         "success": result.get("success", False),
         "error": result.get("error", None),
         "feasibility_errors": result.get("feasibility_errors", []),
+        "symmetry_adjustments": symmetry_adjustments,
         "zones": zone_results,
         "transitions": result.get("transitions", []),
         "root_index": result.get("root_index", 0),
@@ -227,9 +260,12 @@ def optimize_multi_zone_stream():
         except (ValueError, TypeError):
             return jsonify({"error": f"Zone {i + 1} geçersiz değerler içeriyor"}), 400
 
+    zones, symmetry_adjustments = _normalize_multi_zone_symmetry(zones)
+
     bounds = payload.get("bounds", None)
     panel_scale_mm = float(payload.get("panel_scale_mm", 300))
     rule_weights = payload.get("rule_weights", None)
+    hard_rules = payload.get("hard_rules", None)
     use_surrogate_stream = bool(payload.get("use_surrogate", False))
 
     # Thread-safe queue
@@ -237,7 +273,14 @@ def optimize_multi_zone_stream():
 
     def worker():
         try:
-            optimizer = MultiZoneOptimizer(zones, bounds=bounds, panel_scale_mm=panel_scale_mm, rule_weights=rule_weights, use_surrogate=use_surrogate_stream)
+            optimizer = MultiZoneOptimizer(
+                zones,
+                bounds=bounds,
+                panel_scale_mm=panel_scale_mm,
+                rule_weights=rule_weights,
+                hard_rules=hard_rules,
+                use_surrogate=use_surrogate_stream,
+            )
             
             def progress_callback(data):
                 q.put({"type": "progress", "data": data})
@@ -267,6 +310,7 @@ def optimize_multi_zone_stream():
                 "success": result.get("success", False),
                 "error": result.get("error", None),
                 "feasibility_errors": result.get("feasibility_errors", []),
+                "symmetry_adjustments": symmetry_adjustments,
                 "zones": zone_results,
                 "transitions": result.get("transitions", []),
                 "root_index": result.get("root_index", 0),

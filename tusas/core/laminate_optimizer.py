@@ -41,8 +41,15 @@ class LaminateOptimizer:
     DROP_OFF_ATTEMPTS = 3000
     ANGLE_TARGET_DROP_ATTEMPTS = 3000
 
+    DEFAULT_HARD_RULES = {
+        "external_0": True,
+        "adjacent_0_90": True,
+        "external_45": True,
+        "max_two_consecutive_drops": True,
+    }
+
     def __init__(self, ply_counts: Dict[int, int], weights: Optional[Dict[str, float]] = None,
-                 use_surrogate: bool = False):
+                 use_surrogate: bool = False, hard_rules: Optional[Dict[str, bool]] = None):
         self.ply_counts = ply_counts
         self.initial_pool = []  # type: List[int]
         for angle, count in ply_counts.items():
@@ -55,6 +62,12 @@ class LaminateOptimizer:
         else:
             self.WEIGHTS = dict(self.WEIGHTS)
 
+        self.hard_rules = dict(self.DEFAULT_HARD_RULES)
+        if hard_rules:
+            for key, value in hard_rules.items():
+                if key in self.hard_rules:
+                    self.hard_rules[key] = bool(value)
+
         # Surrogate model entegrasyonu
         self._surrogate = None
         self._use_surrogate = use_surrogate
@@ -64,6 +77,12 @@ class LaminateOptimizer:
             self._surrogate = load_surrogate()
             if self._surrogate is not None:
                 print("Surrogate model yuklendi - hizlandirilmis mod aktif")
+
+    def _hard_rule_enabled(self, key: str) -> bool:
+        return bool(self.hard_rules.get(key, self.DEFAULT_HARD_RULES.get(key, True)))
+
+    def _locked_outer_ply_count(self) -> int:
+        return 2 if self._hard_rule_enabled("external_45") else 0
 
     def _is_symmetric(self, sequence: List[int]) -> bool:
         """Sequence simetrik mi kontrol et."""
@@ -106,44 +125,39 @@ class LaminateOptimizer:
             else:
                 angle_counts_for_left[angle] = total_count // 2
 
-        # ★ İLK 2 KATMAN ±45° GARANTİSİ ★
-        # Sol yarının ilk 2 pozisyonunu ±45° ile doldur
         left_half = []
         angle_counts_left = {angle: 0 for angle in angle_total_counts.keys()}
 
-        # İlk 2 pozisyon için ±45° ata
-        available_45 = angle_counts_for_left.get(45, 0)
-        available_m45 = angle_counts_for_left.get(-45, 0)
+        if self._hard_rule_enabled("external_45"):
+            # İlk 2 pozisyon için ±45° ata
+            available_45 = angle_counts_for_left.get(45, 0)
+            available_m45 = angle_counts_for_left.get(-45, 0)
 
-        if available_45 >= 1 and available_m45 >= 1:
-            # İdeal: 45, -45 veya -45, 45 alternasyonu
-            if random.random() < 0.5:
-                left_half = [45, -45]
-            else:
-                left_half = [-45, 45]
-            angle_counts_left[45] = 1
-            angle_counts_left[-45] = 1
-        elif available_45 >= 2:
-            left_half = [45, 45]
-            angle_counts_left[45] = 2
-        elif available_m45 >= 2:
-            left_half = [-45, -45]
-            angle_counts_left[-45] = 2
-        else:
-            # Yetersiz ±45 stoku - mevcut olanı 2'ye tamamla
-            # (simetrik yapıda en az 2 ±45 gerekli)
-            if available_45 >= 1:
-                left_half = [45, 45]
-                angle_counts_left[45] = min(2, available_45)
-                # Eksik kalan ±45 sayısı fazladan eklenecek
-            elif available_m45 >= 1:
-                left_half = [-45, -45]
-                angle_counts_left[-45] = min(2, available_m45)
-            else:
-                # Hiç ±45 yok - yine de ±45 koy (hard constraint gerektiriyor)
-                left_half = [45, -45]
+            if available_45 >= 1 and available_m45 >= 1:
+                # İdeal: 45, -45 veya -45, 45 alternasyonu
+                if random.random() < 0.5:
+                    left_half = [45, -45]
+                else:
+                    left_half = [-45, 45]
                 angle_counts_left[45] = 1
                 angle_counts_left[-45] = 1
+            elif available_45 >= 2:
+                left_half = [45, 45]
+                angle_counts_left[45] = 2
+            elif available_m45 >= 2:
+                left_half = [-45, -45]
+                angle_counts_left[-45] = 2
+            else:
+                if available_45 >= 1:
+                    left_half = [45, 45]
+                    angle_counts_left[45] = min(2, available_45)
+                elif available_m45 >= 1:
+                    left_half = [-45, -45]
+                    angle_counts_left[-45] = min(2, available_m45)
+                else:
+                    left_half = [45, -45]
+                    angle_counts_left[45] = 1
+                    angle_counts_left[-45] = 1
 
         # Kalan pozisyonları doldur
         pool_copy = self.initial_pool[:]
@@ -171,11 +185,15 @@ class LaminateOptimizer:
                         left_half.append(ply)
                 break
 
-        # İlk 2 pozisyonu koru, gerisini greedy yerleştir (0-90 bitişiklik önleme + 90° dış yüzey bias)
-        fixed_head = left_half[:2]
-        rest = left_half[2:]
+        lock_count = self._locked_outer_ply_count()
+        fixed_head = left_half[:lock_count]
+        rest = left_half[lock_count:]
         prev_ply = fixed_head[-1] if fixed_head else None
-        rest = self._greedy_no_adjacent_0_90(rest, prev_ply)
+        rest = self._greedy_no_adjacent_0_90(
+            rest,
+            prev_ply,
+            enforce_adjacent_rule=self._hard_rule_enabled("adjacent_0_90"),
+        )
         left_half = fixed_head + rest
 
         right_half = left_half[::-1]
@@ -185,7 +203,7 @@ class LaminateOptimizer:
         else:
             sequence = left_half + right_half
 
-        sequence = self._fix_adjacent_0_90(sequence)
+        sequence = self._fix_adjacent_0_90(sequence, enabled=self._hard_rule_enabled("adjacent_0_90"))
 
         # Validation
         assert len(sequence) == total, "Sequence length mismatch: {} != {}".format(len(sequence), total)
@@ -196,7 +214,7 @@ class LaminateOptimizer:
 
         return sequence
 
-    def _greedy_no_adjacent_0_90(self, plies, prev_ply=None):
+    def _greedy_no_adjacent_0_90(self, plies, prev_ply=None, enforce_adjacent_rule: bool = True):
         """Greedy yerleştirme: 0-90 bitişikliğini önle, 90°'yi simetri ekseninden uzak tut,
         3+ grouping'i engelle.
 
@@ -240,7 +258,7 @@ class LaminateOptimizer:
                     continue
 
                 # 0-90 bitişiklik kontrolü
-                if last is not None:
+                if enforce_adjacent_rule and last is not None:
                     if (last == 0 and candidate == 90) or (last == 90 and candidate == 0):
                         continue
 
@@ -260,8 +278,10 @@ class LaminateOptimizer:
         return result
 
     @staticmethod
-    def _fix_adjacent_0_90(seq):
+    def _fix_adjacent_0_90(seq, enabled: bool = True):
         """0° ve 90° yan yana geliyorsa swap yaparak düzelt."""
+        if not enabled:
+            return seq[:]
         seq = seq[:]
         max_attempts = len(seq) * 3
         attempt = 0
@@ -646,8 +666,7 @@ class LaminateOptimizer:
         n = len(sequence)
         half = n // 2
 
-        # İlk 2 pozisyonu koru (±45° external plies)
-        min_idx = 2
+        min_idx = self._locked_outer_ply_count()
         if half <= min_idx:
             return
 
@@ -667,7 +686,7 @@ class LaminateOptimizer:
         sequence[i_mirror], sequence[j_mirror] = sequence[j_mirror], sequence[i_mirror]
 
         # 0-90 yan yana oluştuysa geri al
-        if self._has_adjacent_0_90(sequence):
+        if self._hard_rule_enabled("adjacent_0_90") and self._has_adjacent_0_90(sequence):
             sequence[i], sequence[j] = sequence[j], sequence[i]
             sequence[i_mirror], sequence[j_mirror] = sequence[j_mirror], sequence[i_mirror]
 
@@ -676,7 +695,7 @@ class LaminateOptimizer:
         İlk 2 pozisyon (±45°) korunur."""
         n = len(sequence)
         half = n // 2
-        min_idx = 2  # İlk 2 pozisyonu koru
+        min_idx = self._locked_outer_ply_count()
 
         if half <= min_idx:
             return False
@@ -695,7 +714,9 @@ class LaminateOptimizer:
 
                 candidate_groupings = self._count_groupings(candidate)
 
-                if candidate_groupings < current_groupings and not self._has_adjacent_0_90(candidate):
+                if candidate_groupings < current_groupings and (
+                    not self._hard_rule_enabled("adjacent_0_90") or not self._has_adjacent_0_90(candidate)
+                ):
                     good_swaps.append((i, j))
 
         if good_swaps:
@@ -714,7 +735,7 @@ class LaminateOptimizer:
         İlk 2 pozisyon (±45°) korunur."""
         n = len(sequence)
         half = n // 2
-        min_idx = 2  # İlk 2 pozisyonu koru
+        min_idx = self._locked_outer_ply_count()
 
         # Sol yarıda +45 ve -45 bul (pozisyon 2'den sonra)
         pos_45_left = [i for i in range(min_idx, half) if sequence[i] == 45]
@@ -733,7 +754,7 @@ class LaminateOptimizer:
             sequence[i1_mirror], sequence[i2_mirror] = sequence[i2_mirror], sequence[i1_mirror]
 
             # 0-90 yan yana oluştuysa geri al
-            if self._has_adjacent_0_90(sequence):
+            if self._hard_rule_enabled("adjacent_0_90") and self._has_adjacent_0_90(sequence):
                 sequence[i1], sequence[i2] = sequence[i2], sequence[i1]
                 sequence[i1_mirror], sequence[i2_mirror] = sequence[i2_mirror], sequence[i1_mirror]
 
@@ -1011,7 +1032,7 @@ class LaminateOptimizer:
             half = n // 2
 
             # İlk 2 pozisyonu koru (±45° HARD CONSTRAINT)
-            min_idx = 2
+            min_idx = self._locked_outer_ply_count()
             candidates = []
 
             for i in range(min_idx, half):
@@ -1146,7 +1167,7 @@ class LaminateOptimizer:
         # ========== HARD CONSTRAINTS ==========
 
         # HARD 1: 0° başlangıç/bitiş YASAK
-        if sequence[0] == 0 or sequence[-1] == 0:
+        if self._hard_rule_enabled("external_0") and (sequence[0] == 0 or sequence[-1] == 0):
             return 0.0, {
                 "total_score": 0.0,
                 "max_score": 100.0,
@@ -1161,24 +1182,25 @@ class LaminateOptimizer:
             }
 
         # HARD 2: 0° ve 90° yan yana YASAK
-        for i in range(len(sequence) - 1):
-            a, b = sequence[i], sequence[i + 1]
-            if (a == 0 and b == 90) or (a == 90 and b == 0):
-                return 0.0, {
-                    "total_score": 0.0,
-                    "max_score": 100.0,
-                    "rules": {
-                        "ADJ_0_90": {
-                            "weight": 999.0,
-                            "score": 0,
-                            "penalty": 999.0,
-                            "reason": "0° ve 90° yan yana (YASAK) - pozisyon {}/{}".format(i, i + 1),
-                        }
-                    },
-                }
+        if self._hard_rule_enabled("adjacent_0_90"):
+            for i in range(len(sequence) - 1):
+                a, b = sequence[i], sequence[i + 1]
+                if (a == 0 and b == 90) or (a == 90 and b == 0):
+                    return 0.0, {
+                        "total_score": 0.0,
+                        "max_score": 100.0,
+                        "rules": {
+                            "ADJ_0_90": {
+                                "weight": 999.0,
+                                "score": 0,
+                                "penalty": 999.0,
+                                "reason": "0° ve 90° yan yana (YASAK) - pozisyon {}/{}".format(i, i + 1),
+                            }
+                        },
+                    }
 
         # HARD 3: İlk 2 ve son 2 katman ±45° OLMALI
-        if len(sequence) >= 4:
+        if self._hard_rule_enabled("external_45") and len(sequence) >= 4:
             outer_plies = [sequence[0], sequence[1], sequence[-2], sequence[-1]]
             for idx, ply in enumerate(outer_plies):
                 if abs(ply) != 45:
