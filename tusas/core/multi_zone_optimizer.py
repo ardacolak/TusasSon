@@ -40,7 +40,7 @@ class MultiZoneOptimizer:
         results = optimizer.optimize_all()
     """
 
-    MAX_ROOT_RETRIES = 5  # Root güncellemesi için maksimum deneme
+    MAX_ROOT_RETRIES = 12  # Root güncellemesi için maksimum deneme
 
     def __init__(self, zones_config: List[Dict[int, int]],
                  bounds: Optional[List[Dict]] = None,
@@ -481,14 +481,8 @@ class MultiZoneOptimizer:
                     )
                     fitness, details = target_optimizer.calculate_fitness(new_seq)
 
-                    # Drop-off sonrası kısa local search ile kaliteyi artır
-                    if fitness > 0:
-                        polished_seq, polished_score = target_optimizer._local_search(new_seq, max_iter=25)
-                        if polished_score > fitness:
-                            new_seq = polished_seq
-                            fitness = polished_score
-                            _, details = target_optimizer.calculate_fitness(new_seq)
-                            print(f"  Zone {zone_idx + 1} polish: {polished_score:.2f}/100")
+                    # Child zone'larda drop-off sonrası sıra korunur.
+                    # 0/90 yan yana gelirse parent/root yeniden optimize edilerek yeni bir deneme aranır.
 
                     zone_results[zone_idx] = {
                         "index": zone_idx,

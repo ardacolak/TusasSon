@@ -71,69 +71,14 @@ class DropOffOptimizer:
         pos_map: Optional[List[int]] = None,
     ) -> Tuple[List[int], Optional[List[int]]]:
         """
-        Try to repair 0/90 adjacency after a valid drop without changing ply counts.
+        Preserve the exact surviving ply order after drop-off.
 
-        When ``pos_map`` is provided, the same swaps are mirrored there so original
-        parent-index tracking remains aligned with the normalized sequence.
+        If removing plies creates a forbidden 0/90 adjacency, that candidate must
+        be rejected by the caller instead of silently reordering the remaining
+        laminate.
         """
         normalized_seq = list(seq)
         normalized_pos = list(pos_map) if pos_map is not None else None
-
-        if not self._hard_rule_enabled("adjacent_0_90"):
-            return normalized_seq, normalized_pos
-
-        if len(normalized_seq) < 2:
-            return normalized_seq, normalized_pos
-
-        max_attempts = len(normalized_seq) * 3
-        attempt = 0
-        while attempt < max_attempts:
-            violation_idx = None
-            for i in range(len(normalized_seq) - 1):
-                if self._is_forbidden_adjacent(normalized_seq[i], normalized_seq[i + 1]):
-                    violation_idx = i
-                    break
-
-            if violation_idx is None:
-                break
-
-            swapped = False
-            candidates = list(range(len(normalized_seq)))
-            random.shuffle(candidates)
-            for j in candidates:
-                if j == violation_idx or j == violation_idx + 1:
-                    continue
-
-                normalized_seq[violation_idx + 1], normalized_seq[j] = (
-                    normalized_seq[j],
-                    normalized_seq[violation_idx + 1],
-                )
-                if normalized_pos is not None:
-                    normalized_pos[violation_idx + 1], normalized_pos[j] = (
-                        normalized_pos[j],
-                        normalized_pos[violation_idx + 1],
-                    )
-
-                if not any(
-                    self._is_forbidden_adjacent(normalized_seq[k], normalized_seq[k + 1])
-                    for k in range(len(normalized_seq) - 1)
-                ):
-                    swapped = True
-                    break
-
-                normalized_seq[violation_idx + 1], normalized_seq[j] = (
-                    normalized_seq[j],
-                    normalized_seq[violation_idx + 1],
-                )
-                if normalized_pos is not None:
-                    normalized_pos[violation_idx + 1], normalized_pos[j] = (
-                        normalized_pos[j],
-                        normalized_pos[violation_idx + 1],
-                    )
-
-            if not swapped:
-                break
-            attempt += 1
 
         return normalized_seq, normalized_pos
 

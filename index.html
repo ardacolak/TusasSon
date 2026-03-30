@@ -2396,6 +2396,14 @@
         return out;
       }
 
+      function buildDropPreservedSequence(parentSeq, droppedSet, fallbackSeq = []) {
+        if (!Array.isArray(parentSeq) || parentSeq.length === 0) {
+          return Array.isArray(fallbackSeq) ? fallbackSeq : [];
+        }
+        const safeDroppedSet = droppedSet instanceof Set ? droppedSet : new Set();
+        return parentSeq.filter((_, idx) => !safeDroppedSet.has(idx));
+      }
+
       // Zone index -> zone obj map (parent/child ilişkisini kolay bulmak için)
       const zoneByIndex = new Map();
       (zones || []).forEach(z => {
@@ -2408,6 +2416,36 @@
       (transitions || []).forEach(tr => {
         if (tr && typeof tr.to === 'number') transitionByTo.set(tr.to, tr);
       });
+
+      const displayedSeqCache = new Map();
+      function buildDisplayedSequence(zoneIndex) {
+        if (displayedSeqCache.has(zoneIndex)) return displayedSeqCache.get(zoneIndex);
+
+        const zoneObj = zoneByIndex.get(zoneIndex) || null;
+        const rawSeq = Array.isArray(zoneObj?.sequence) ? zoneObj.sequence : [];
+        if (!zoneObj || zoneObj.is_root) {
+          const rootDisplaySeq = rawSeq.length > 0 ? rawSeq : (rootSeq || []);
+          displayedSeqCache.set(zoneIndex, rootDisplaySeq);
+          return rootDisplaySeq;
+        }
+
+        const tr = transitionByTo.get(zoneIndex);
+        if (!tr) {
+          displayedSeqCache.set(zoneIndex, rawSeq);
+          return rawSeq;
+        }
+
+        const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
+        const parentDisplaySeq = buildDisplayedSequence(parentIndex);
+        const droppedSetForDisplay = new Set(
+          (Array.isArray(tr.dropped_indices) ? tr.dropped_indices : [])
+            .map(n => parseInt(n, 10))
+            .filter(n => Number.isFinite(n) && n >= 0)
+        );
+        const derivedSeq = buildDropPreservedSequence(parentDisplaySeq, droppedSetForDisplay, rawSeq);
+        displayedSeqCache.set(zoneIndex, derivedSeq);
+        return derivedSeq;
+      }
 
       sortedZones.forEach((zone, stackIdx) => {
         const row = document.createElement('div');
@@ -2441,7 +2479,7 @@
             const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
             parentZone = zoneByIndex.get(parentIndex) || null;
           }
-          const parentSeq = parentZone && Array.isArray(parentZone.sequence) ? parentZone.sequence : rootSeq;
+          const parentSeq = parentZone ? buildDisplayedSequence(parentZone.index) : rootSeq;
           displaySeq = parentSeq || [];
           if (tr && Array.isArray(tr.dropped_indices)) {
             droppedSet = new Set(
@@ -2457,7 +2495,7 @@
         // === 1) ANA (HER ZAMAN GÖRÜNÜR) DİZİLİM — Zone'un kendi temiz dizilimi ===
         // Root için: kendi sequence'i (zaten X işareti yok)
         // Non-root için: kendi sequence'i (X'siz, temiz) — her zaman görünür
-        const seq = Array.isArray(zone.sequence) ? zone.sequence : [];
+        const seq = buildDisplayedSequence(zone.index);
         const seqLen = seq.length;
         const seqMidIndex = Math.floor(seqLen / 2);
         const seqIsOdd = seqLen % 2 === 1;
@@ -2759,6 +2797,39 @@
         if (tr && typeof tr.to === 'number') transitionByTo.set(tr.to, tr);
       });
 
+      function buildDropPreservedSequence(parentSeq, droppedSet, fallbackSeq = []) {
+        if (!Array.isArray(parentSeq) || parentSeq.length === 0) {
+          return Array.isArray(fallbackSeq) ? fallbackSeq : [];
+        }
+        const safeDroppedSet = droppedSet instanceof Set ? droppedSet : new Set();
+        return parentSeq.filter((_, idx) => !safeDroppedSet.has(idx));
+      }
+
+      const displayedSeqCache = new Map();
+      function buildDisplayedSequence(zoneIndex) {
+        if (displayedSeqCache.has(zoneIndex)) return displayedSeqCache.get(zoneIndex);
+
+        const zoneObj = zoneByIndex.get(zoneIndex) || null;
+        const rawSeq = Array.isArray(zoneObj?.sequence) ? zoneObj.sequence : [];
+        if (!zoneObj || zoneObj.is_root) {
+          const rootDisplaySeq = rawSeq.length > 0 ? rawSeq : (rootSeq || []);
+          displayedSeqCache.set(zoneIndex, rootDisplaySeq);
+          return rootDisplaySeq;
+        }
+
+        const tr = transitionByTo.get(zoneIndex);
+        if (!tr) {
+          displayedSeqCache.set(zoneIndex, rawSeq);
+          return rawSeq;
+        }
+
+        const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
+        const parentDisplaySeq = buildDisplayedSequence(parentIndex);
+        const derivedSeq = buildDropPreservedSequence(parentDisplaySeq, getDroppedSet(tr), rawSeq);
+        displayedSeqCache.set(zoneIndex, derivedSeq);
+        return derivedSeq;
+      }
+
       const zoneNeighborMap = new Map();
       if (Array.isArray(neighborGraph) && neighborGraph.length > 0) {
         neighborGraph.forEach((neighbors, idx) => {
@@ -2891,10 +2962,12 @@
           if (tr) {
             const parentIndex = Array.isArray(tr.from) ? tr.from[0] : tr.from;
             parentZoneRef = zoneByIndex.get(parentIndex) || null;
-            parentSeq = parentZoneRef && Array.isArray(parentZoneRef.sequence) ? parentZoneRef.sequence : [];
+            parentSeq = parentZoneRef ? buildDisplayedSequence(parentZoneRef.index) : [];
             droppedSet = getDroppedSet(tr);
           }
         }
+
+        const cleanSeq = isRoot ? seq : buildDropPreservedSequence(parentSeq, droppedSet, seq);
 
         const col = document.createElement('div');
         col.className = 'flex flex-col items-center min-w-[130px] max-w-[180px] flex-1 bg-white/80 border border-slate-300 rounded-lg px-2 py-2 shadow-sm';
@@ -2972,7 +3045,7 @@
 
           const dropoffLayers = document.createElement('div');
           dropoffLayers.className = 'flex flex-col items-center gap-[1px] w-full';
-          appendVerticalSequence(dropoffLayers, seq);
+          appendVerticalSequence(dropoffLayers, cleanSeq);
           dropoffCol.appendChild(dropoffLayers);
 
           toggleBtn.onclick = () => {
