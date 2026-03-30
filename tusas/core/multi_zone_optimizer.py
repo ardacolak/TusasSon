@@ -40,7 +40,8 @@ class MultiZoneOptimizer:
         results = optimizer.optimize_all()
     """
 
-    MAX_ROOT_RETRIES = 12  # Root güncellemesi için maksimum deneme
+    MAX_ROOT_RETRIES = 4   # Her batch'te birden fazla root adayı denenir
+    ROOT_CANDIDATES_PER_BATCH = 3
 
     def __init__(self, zones_config: List[Dict[int, int]],
                  bounds: Optional[List[Dict]] = None,
@@ -305,6 +306,107 @@ class MultiZoneOptimizer:
         
         return results
 
+    def _try_root_candidate(
+        self,
+        root_seq: List[int],
+        root_score: float,
+        root_details: Dict[str, Any],
+        bfs_order: List[int],
+        parent_map: Dict[int, int],
+        report_progress=None,
+    ) -> Tuple[bool, Dict[int, Dict[str, Any]], List[Dict[str, Any]], Optional[str]]:
+        zone_results = {
+            self.root_index: {
+                "index": self.root_index,
+                "sequence": root_seq,
+                "ply_count": len(root_seq),
+                "fitness": root_score,
+                "details": root_details,
+                "is_root": True,
+                "ply_counts": dict(Counter(root_seq)),
+            }
+        }
+        transitions = []
+
+        for i, zone_idx in enumerate(bfs_order):
+            target_config = self.zones_config[zone_idx]
+            target_total = sum(target_config.values())
+
+            source_idx = parent_map[zone_idx]
+            source_result = zone_results[source_idx]
+            source_seq = source_result["sequence"]
+
+            print(f"\nZone {zone_idx + 1} ({target_total} ply) - Zone {source_idx + 1}'den drop-off yapılıyor...")
+
+            source_optimizer = LaminateOptimizer(
+                dict(Counter(source_seq)),
+                weights=self.rule_weights,
+                hard_rules=self.hard_rules,
+            )
+            drop_optimizer = DropOffOptimizer(source_seq, source_optimizer, hard_rules=self.hard_rules)
+
+            try:
+                new_seq, drop_score, dropped_by_angle = drop_optimizer.optimize_drop_with_angle_targets(target_config)
+
+                actual_counts = Counter(new_seq)
+                expected_counts = Counter({int(k): int(v) for k, v in target_config.items() if int(v) > 0})
+                if len(new_seq) != target_total or actual_counts != expected_counts:
+                    raise ValueError(
+                        f"Zone {zone_idx + 1} hedefini saglamayan dizilim dondu. "
+                        f"Beklenen={dict(expected_counts)}, Gelen={dict(actual_counts)}, "
+                        f"Ply={len(new_seq)}/{target_total}"
+                    )
+
+                target_optimizer = LaminateOptimizer(
+                    target_config,
+                    weights=self.rule_weights,
+                    hard_rules=self.hard_rules,
+                )
+                fitness, details = target_optimizer.calculate_fitness(new_seq)
+                if fitness <= 0:
+                    raise ValueError(
+                        f"Zone {zone_idx + 1} drop-off sonrasi hard kurallari saglamiyor."
+                    )
+
+                zone_results[zone_idx] = {
+                    "index": zone_idx,
+                    "sequence": new_seq,
+                    "ply_count": len(new_seq),
+                    "fitness": float(fitness),
+                    "details": details,
+                    "is_root": False,
+                    "ply_counts": dict(Counter(new_seq)),
+                    "dropped_by_angle": dropped_by_angle,
+                }
+
+                all_dropped = []
+                for angle, indices in dropped_by_angle.items():
+                    all_dropped.extend(indices)
+
+                transitions.append(
+                    {
+                        "from": source_idx,
+                        "to": zone_idx,
+                        "dropped_indices": sorted(all_dropped),
+                        "dropped_by_angle": dropped_by_angle,
+                    }
+                )
+
+                print(f"Zone {zone_idx + 1} skor: {fitness:.2f}/100")
+
+                if report_progress:
+                    total_zones = len(bfs_order)
+                    if total_zones > 0:
+                        percent_per_zone = 65.0 / total_zones
+                        current_progress = 25 + ((i + 1) * percent_per_zone)
+                        report_progress(int(current_progress), f"Zone {zone_idx + 1} tamamlandi ({fitness:.1f})")
+
+            except Exception as e:
+                print(f"Zone {zone_idx + 1} drop-off BAŞARISIZ: {e}")
+                return False, zone_results, transitions, str(e)
+
+        return True, zone_results, transitions, None
+
     def optimize_all(self, progress_callback=None) -> Dict[str, Any]:
         """
         Tüm zone'ları optimize et.
@@ -363,164 +465,124 @@ class MultiZoneOptimizer:
                     "neighbor_graph": [list(nb) for nb in self.zone_neighbors],
                 }
         
+        if self.zone_neighbors:
+            bfs_order, parent_map = self._build_bfs_drop_order()
+        else:
+            bfs_order = [idx for idx in self.sorted_zone_indices if idx != self.root_index]
+            parent_map = {}
+            for idx in self.sorted_zone_indices:
+                if idx == self.root_index:
+                    continue
+                prev_pos = self.sorted_zone_indices.index(idx) - 1
+                parent_map[idx] = self.sorted_zone_indices[prev_pos]
+
+        print(f"BFS drop-off sirasi: {[f'Zone {i+1}' for i in bfs_order]}")
+        print(f"Kaynak haritasi: {{{', '.join(f'Zone {k+1} <- Zone {v+1}' for k, v in parent_map.items())}}}")
+
+        feasibility_errors = []
+        for zone_idx in bfs_order:
+            target = self.zones_config[zone_idx]
+            source_idx = parent_map[zone_idx]
+            source = self.zones_config[source_idx]
+            for angle, target_count in target.items():
+                source_count = source.get(angle, 0)
+                if target_count > source_count:
+                    feasibility_errors.append(
+                        f"Zone {zone_idx+1} ({angle}\u00b0: {target_count} ply) > "
+                        f"Zone {source_idx+1} ({angle}\u00b0: {source_count} ply)"
+                    )
+
+        if feasibility_errors:
+            print(f"HATA: Ply uyumsuzlugu: {'; '.join(feasibility_errors)}")
+            return {
+                "success": False,
+                "error": "Ply sayilari uyumsuz: " + "; ".join(feasibility_errors),
+                "feasibility_errors": feasibility_errors,
+                "zones": [],
+                "transitions": [],
+                "root_index": self.root_index,
+                "drop_off_tree": {},
+                "neighbor_graph": [list(nb) for nb in self.zone_neighbors] if self.zone_neighbors else [],
+            }
+
+        seen_root_sequences = set()
+        last_zone_results = {}
+        last_transitions = []
+
         for attempt in range(self.MAX_ROOT_RETRIES):
             total_iterations += 1
-            print(f"\n--- Deneme {attempt + 1}/{self.MAX_ROOT_RETRIES} ---")
-            
-            # 1. Root zone'u optimize et
+            print(f"\n--- Root Batch {attempt + 1}/{self.MAX_ROOT_RETRIES} ---")
+
             root_config = self.zones_config[self.root_index]
-            print(f"\nRoot Zone (Zone {self.root_index + 1}) optimizasyonu başlıyor...")
-            
-            report_progress(15, f"Root Zone (Zone {self.root_index + 1}) optimize ediliyor...")
+            print(f"\nRoot Zone (Zone {self.root_index + 1}) adaylari uretiliyor...")
+
+            report_progress(15, f"Root Zone (Zone {self.root_index + 1}) adaylari uretiliyor...")
             root_optimizer = LaminateOptimizer(
                 root_config,
                 weights=self.rule_weights,
                 use_surrogate=self.use_surrogate,
                 hard_rules=self.hard_rules,
             )
-            root_seq, root_score, root_details, _ = root_optimizer.run_hybrid_optimization()
-            
-            print(f"Root Zone skor: {root_score:.2f}/100")
-            report_progress(25, f"Root Zone tamamlandi (Skor: {root_score:.1f})")
+            root_candidates, _ = root_optimizer.generate_hybrid_candidates(
+                n_restarts=self.ROOT_CANDIDATES_PER_BATCH
+            )
 
-            # Zone sonuçlarını sakla
+            unique_candidates = []
+            for candidate in root_candidates:
+                root_key = tuple(candidate["sequence"])
+                if root_key in seen_root_sequences:
+                    continue
+                seen_root_sequences.add(root_key)
+                unique_candidates.append(candidate)
+
+            if not unique_candidates:
+                print("Bu batch'te yeni bir root adayi cikmadi, yeni batch deneniyor...")
+                root_updated = True
+                last_error = last_error or "Yeni root adayi uretilemedi"
+                continue
+
+            best_batch_score = unique_candidates[0]["score"]
+            print(f"{len(unique_candidates)} benzersiz root adayi test edilecek. En iyi batch skoru: {best_batch_score:.2f}/100")
+            report_progress(25, f"{len(unique_candidates)} root adayi hazir (en iyi: {best_batch_score:.1f})")
+
+            drop_success = False
             zone_results = {}
-            zone_results[self.root_index] = {
-                "index": self.root_index,
-                "sequence": root_seq,
-                "ply_count": len(root_seq),
-                "fitness": root_score,
-                "details": root_details,
-                "is_root": True,
-                "ply_counts": dict(Counter(root_seq))
-            }
-
             transitions = []
-            drop_success = True
 
-            # 2. BFS ile komşuluk grafiğinde drop-off sırası belirle
-            if self.zone_neighbors:
-                bfs_order, parent_map = self._build_bfs_drop_order()
-            else:
-                # Komşuluk bilgisi yoksa eski davranışa geri dön (backward compat)
-                bfs_order = [idx for idx in self.sorted_zone_indices if idx != self.root_index]
-                parent_map = {}
-                for idx in self.sorted_zone_indices:
-                    if idx == self.root_index:
-                        continue
-                    prev_pos = self.sorted_zone_indices.index(idx) - 1
-                    parent_map[idx] = self.sorted_zone_indices[prev_pos]
+            for candidate_idx, candidate in enumerate(unique_candidates):
+                root_seq = candidate["sequence"]
+                root_score = float(candidate["score"])
+                root_details = candidate["details"]
 
-            print(f"BFS drop-off sirasi: {[f'Zone {i+1}' for i in bfs_order]}")
-            print(f"Kaynak haritasi: {{{', '.join(f'Zone {k+1} <- Zone {v+1}' for k, v in parent_map.items())}}}")
-
-            # Açı bazlı ply sayısı ön doğrulaması
-            feasibility_errors = []
-            for zone_idx in bfs_order:
-                target = self.zones_config[zone_idx]
-                source_idx = parent_map[zone_idx]
-                source = self.zones_config[source_idx]
-                for angle, target_count in target.items():
-                    source_count = source.get(angle, 0)
-                    if target_count > source_count:
-                        feasibility_errors.append(
-                            f"Zone {zone_idx+1} ({angle}\u00b0: {target_count} ply) > "
-                            f"Zone {source_idx+1} ({angle}\u00b0: {source_count} ply)"
-                        )
-
-            if feasibility_errors:
-                print(f"HATA: Ply uyumsuzlugu: {'; '.join(feasibility_errors)}")
-                return {
-                    "success": False,
-                    "error": "Ply sayilari uyumsuz: " + "; ".join(feasibility_errors),
-                    "feasibility_errors": feasibility_errors,
-                    "zones": [],
-                    "transitions": [],
-                    "root_index": self.root_index,
-                    "drop_off_tree": {},
-                    "neighbor_graph": [list(nb) for nb in self.zone_neighbors] if self.zone_neighbors else [],
-                }
-
-            for i, zone_idx in enumerate(bfs_order):
-                target_config = self.zones_config[zone_idx]
-                target_total = sum(target_config.values())
-
-                # Kaynak zone'u komşuluk grafiğinden al
-                source_idx = parent_map[zone_idx]
-                source_result = zone_results[source_idx]
-                source_seq = source_result["sequence"]
-                
-                print(f"\nZone {zone_idx + 1} ({target_total} ply) - Zone {source_idx + 1}'den drop-off yapılıyor...")
-
-                # Drop-off optimizer oluştur
-                source_optimizer = LaminateOptimizer(
-                    dict(Counter(source_seq)),
-                    weights=self.rule_weights,
-                    hard_rules=self.hard_rules,
+                print(
+                    f"\nRoot adayi {candidate_idx + 1}/{len(unique_candidates)} deneniyor "
+                    f"(Restart {candidate.get('restart', '?')}, Skor: {root_score:.2f}/100)"
                 )
-                drop_optimizer = DropOffOptimizer(source_seq, source_optimizer, hard_rules=self.hard_rules)
 
-                try:
-                    # Açıya özel drop-off yap
-                    new_seq, drop_score, dropped_by_angle = drop_optimizer.optimize_drop_with_angle_targets(target_config)
+                candidate_success, candidate_zone_results, candidate_transitions, candidate_error = self._try_root_candidate(
+                    root_seq=root_seq,
+                    root_score=root_score,
+                    root_details=root_details,
+                    bfs_order=bfs_order,
+                    parent_map=parent_map,
+                    report_progress=report_progress,
+                )
 
-                    actual_counts = Counter(new_seq)
-                    expected_counts = Counter({int(k): int(v) for k, v in target_config.items() if int(v) > 0})
-                    if len(new_seq) != target_total or actual_counts != expected_counts:
-                        raise ValueError(
-                            f"Zone {zone_idx + 1} hedefini saglamayan dizilim dondu. "
-                            f"Beklenen={dict(expected_counts)}, Gelen={dict(actual_counts)}, "
-                            f"Ply={len(new_seq)}/{target_total}"
-                        )
-                    
-                    # Fitness hesapla
-                    target_optimizer = LaminateOptimizer(
-                        target_config,
-                        weights=self.rule_weights,
-                        hard_rules=self.hard_rules,
-                    )
-                    fitness, details = target_optimizer.calculate_fitness(new_seq)
+                last_zone_results = candidate_zone_results
+                last_transitions = candidate_transitions
 
-                    # Child zone'larda drop-off sonrası sıra korunur.
-                    # 0/90 yan yana gelirse parent/root yeniden optimize edilerek yeni bir deneme aranır.
-
-                    zone_results[zone_idx] = {
-                        "index": zone_idx,
-                        "sequence": new_seq,
-                        "ply_count": len(new_seq),
-                        "fitness": float(fitness),
-                        "details": details,
-                        "is_root": False,
-                        "ply_counts": dict(Counter(new_seq)),
-                        "dropped_by_angle": dropped_by_angle
-                    }
-                    
-                    # Transition kaydet
-                    all_dropped = []
-                    for angle, indices in dropped_by_angle.items():
-                        all_dropped.extend(indices)
-                    
-                    transitions.append({
-                        "from": source_idx,
-                        "to": zone_idx,
-                        "dropped_indices": sorted(all_dropped),
-                        "dropped_by_angle": dropped_by_angle
-                    })
-                    
-                    print(f"Zone {zone_idx + 1} skor: {fitness:.2f}/100")
-                    
-                    # Calculate progress for zones (25% to 90%)
-                    total_zones = len(bfs_order)
-                    if total_zones > 0:
-                        percent_per_zone = 65.0 / total_zones
-                        current_progress = 25 + ((i + 1) * percent_per_zone)
-                        report_progress(int(current_progress), f"Zone {zone_idx + 1} tamamlandi ({fitness:.1f})")
-
-                except Exception as e:
-                    print(f"Zone {zone_idx + 1} drop-off BAŞARISIZ: {e}")
-                    last_error = str(e)
-                    drop_success = False
+                if candidate_success:
+                    zone_results = candidate_zone_results
+                    transitions = candidate_transitions
+                    drop_success = True
                     break
+
+                last_error = candidate_error
+                root_updated = True
+
+            if not drop_success:
+                print("\nBu batch'teki root adaylari elendi, yeni root batch uretiliyor...")
+                root_updated = True
 
             if drop_success:
                 # Tüm zone'lar başarılı
@@ -565,20 +627,18 @@ class MultiZoneOptimizer:
                     "neighbor_graph": [list(nb) for nb in self.zone_neighbors] if self.zone_neighbors else [],
                 }
             else:
-                # Drop-off başarısız - root'u güncelle
-                print("\nDrop-off başarısız, root zone yeniden optimize ediliyor...")
+                print("\nDrop-off başarısız, yeni root batch deneniyor...")
                 root_updated = True
-                # Yeni deneme için devam et
 
         # Maksimum deneme aşıldı
         print("\nMAKSİMUM DENEME AŞILDI - Kısmi sonuç döndürülüyor")
         report_progress(100, "Islem tamamlandi (Maksimum deneme asildi)")
-        sorted_results = [zone_results.get(i, None) for i in range(len(self.zones_config))]
+        sorted_results = [last_zone_results.get(i, None) for i in range(len(self.zones_config))]
         
         return {
             "success": False,
             "zones": sorted_results,
-            "transitions": transitions,
+            "transitions": last_transitions,
             "root_updated": root_updated,
             "total_iterations": total_iterations,
             "root_index": self.root_index,

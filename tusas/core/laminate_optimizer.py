@@ -1102,47 +1102,45 @@ class LaminateOptimizer:
         )
         return current, current_score
 
-    def run_hybrid_optimization(self) -> Tuple[List[int], float, Dict[str, Any], List[float]]:
-        """3-phase hybrid optimization pipeline.
-        Tutarlılık için 3 bağımsız pipeline çalıştırır, en iyisini döndürür."""
+    def generate_hybrid_candidates(self, n_restarts: int = 3) -> Tuple[List[Dict[str, Any]], List[float]]:
+        """Run multiple independent hybrid pipelines and keep all restart winners."""
         print("=" * 60)
         print("3-PHASE HYBRID OPTIMIZATION (MULTI-RESTART)")
         print("=" * 60)
 
         start_time = time.time()
-
-        # Birden fazla bağımsız pipeline çalıştır, en iyisini al
-        n_restarts = 3
-        overall_best_seq = None
-        overall_best_score = -1
-        overall_best_details = None
+        candidates = []
+        overall_best_score = -1.0
 
         for restart in range(n_restarts):
             print("\n--- Restart {}/{} ---".format(restart + 1, n_restarts))
 
-            # Phase 1: Smart Skeleton
             print("\nPhase 1: Smart Skeleton Construction")
             skeleton = self._build_smart_skeleton()
             phase1_score, _ = self.calculate_fitness(skeleton)
             print("  Score: {:.2f}/100".format(phase1_score))
 
-            # Phase 2: Multi-Start GA
             phase2_start = time.time()
             n_runs = 5 if self.total_plies <= 40 else 7
-            best_seq, phase2_score = self._multi_start_ga(skeleton, n_runs=n_runs)
+            best_seq, _phase2_score = self._multi_start_ga(skeleton, n_runs=n_runs)
             print("  Time: {:.2f}s".format(time.time() - phase2_start))
 
-            # Phase 3: Local Search
             phase3_start = time.time()
             final_seq, final_score = self._local_search(best_seq, max_iter=60)
             print("  Time: {:.2f}s".format(time.time() - phase3_start))
 
             print("  Restart {} result: {:.2f}/100".format(restart + 1, final_score))
 
-            if final_score > overall_best_score:
-                overall_best_score = final_score
-                overall_best_seq = final_seq[:]
-                _, overall_best_details = self.calculate_fitness(final_seq)
+            _, final_details = self.calculate_fitness(final_seq)
+            candidates.append(
+                {
+                    "sequence": final_seq[:],
+                    "score": float(final_score),
+                    "details": final_details,
+                    "restart": restart + 1,
+                }
+            )
+            overall_best_score = max(overall_best_score, float(final_score))
 
         total_time = time.time() - start_time
 
@@ -1151,9 +1149,16 @@ class LaminateOptimizer:
             overall_best_score, total_time, n_restarts))
         print("=" * 60)
 
+        candidates.sort(key=lambda item: item["score"], reverse=True)
         history = [overall_best_score]
+        return candidates, history
 
-        return overall_best_seq, overall_best_score, overall_best_details, history
+    def run_hybrid_optimization(self) -> Tuple[List[int], float, Dict[str, Any], List[float]]:
+        """3-phase hybrid optimization pipeline.
+        Tutarlılık için 3 bağımsız pipeline çalıştırır, en iyisini döndürür."""
+        candidates, history = self.generate_hybrid_candidates(n_restarts=3)
+        best = candidates[0]
+        return best["sequence"], best["score"], best["details"], history
 
     def calculate_fitness(self, sequence: List[int]):
         """
